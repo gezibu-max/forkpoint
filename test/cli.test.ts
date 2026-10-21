@@ -157,6 +157,44 @@ describe("CLI integration", () => {
     }
   });
 
+  it("verifies that two replays produce identical event hashes", () => {
+    const store = makeStore();
+    const record = recordDemo(store, "cli-verify");
+    expect(record.status, record.stderr).toBe(0);
+    const runId = recordedRunId(record.stdout);
+
+    const verify = run(store, ["verify", runId, "--json"]);
+    expect(verify.status, verify.stderr).toBe(0);
+    const result = JSON.parse(verify.stdout) as {
+      ok: boolean;
+      baselineRunId: string;
+      deterministic: boolean;
+      eventCount: number;
+      hash: string;
+      replays: Array<{ runId: string; status: string }>;
+      unconsumedFixtures?: number;
+    };
+
+    expect(result.ok).toBe(true);
+    expect(result.deterministic).toBe(true);
+    expect(result.baselineRunId).toBe(runId);
+    expect(result.eventCount).toBeGreaterThan(10);
+    expect(result.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.replays).toHaveLength(2);
+    expect(result.replays.every((entry) => entry.status === "replayed")).toBe(true);
+    expect(result.unconsumedFixtures).toBeUndefined();
+
+    const cassette = openCassette(store);
+    try {
+      expect(cassette.getRun(runId)?.status).toBe("recorded");
+      expect(
+        cassette.listRuns(10).filter((entry) => entry.mode === "replayed" && entry.parentRunId === runId),
+      ).toHaveLength(2);
+    } finally {
+      cassette.close();
+    }
+  });
+
   it("marks a command that never starts fp.run as failed", () => {
     const store = makeStore();
     const record = spawnSync(

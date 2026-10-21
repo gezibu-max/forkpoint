@@ -18,6 +18,7 @@ export interface SpawnSpec {
   commandText: string;
   baselineRunId?: string;
   extraEnv?: Record<string, string>;
+  quiet?: boolean;
 }
 
 export function spawnChild(spec: SpawnSpec): Promise<ChildOutcome> {
@@ -30,7 +31,7 @@ export function spawnChild(spec: SpawnSpec): Promise<ChildOutcome> {
     };
 
     const child = spawn(spec.command, spec.args, {
-      stdio: "inherit",
+      stdio: spec.quiet === true ? "ignore" : "inherit",
       cwd: process.cwd(),
       env: {
         ...process.env,

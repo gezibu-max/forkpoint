@@ -18,6 +18,12 @@ import {
   replayHelp,
   toReplayOptions,
 } from "./replay.js";
+import {
+  parseVerifyArguments,
+  toVerifyOptions,
+  verifyCommand,
+  verifyHelp,
+} from "./verify.js";
 
 interface CommonOptions {
   store?: string;
@@ -36,6 +42,8 @@ if (argv[0] === "record") {
   await runRecord(argv.slice(1));
 } else if (argv[0] === "replay") {
   await runReplay(argv.slice(1));
+} else if (argv[0] === "verify") {
+  await runVerify(argv.slice(1));
 } else if (argv.length === 0) {
   buildProgram().outputHelp();
 } else {
@@ -67,6 +75,21 @@ async function runReplay(args: string[]): Promise<void> {
       return;
     }
     process.exitCode = await replayCommand(toReplayOptions(parsed));
+  } catch (error) {
+    process.exitCode = printError(error, { json: wantsJson, debug: args.includes("--debug") });
+  }
+}
+
+async function runVerify(args: string[]): Promise<void> {
+  const wantsJson = args.includes("--json");
+  try {
+    const parsed = parseVerifyArguments(args);
+    if (parsed === "help") {
+      process.stdout.write(`${verifyHelp()}\n`);
+      process.exitCode = 0;
+      return;
+    }
+    process.exitCode = await verifyCommand(toVerifyOptions(parsed));
   } catch (error) {
     process.exitCode = printError(error, { json: wantsJson, debug: args.includes("--debug") });
   }
@@ -106,6 +129,16 @@ function buildProgram(): Command {
     .action(() => {
       throw new UsageError(
         "replay must be the first argument: forkpoint replay <run_id> [-- <command...>]",
+      );
+    });
+
+  program
+    .command("verify")
+    .description("Replay a run twice and compare stable event hashes")
+    .allowUnknownOption(true)
+    .action(() => {
+      throw new UsageError(
+        "verify must be the first argument: forkpoint verify <run_id>",
       );
     });
 

@@ -205,3 +205,19 @@
 - 严格按序消费能在“分支改变导致少读/多读”时立刻暴露问题。
 
 **代价**：patch 前已缓存的函数引用（例如 `const now = Date.now`）不会被拦截；子进程、原生扩展和未包装的随机源也不在承诺内。这些限制写入 `limits.md`（规划中）。
+
+---
+
+## ADR-013：verify 比较两次独立重放的稳定事件哈希
+
+**背景**：strict replay 可能“看起来成功”，但某些未包装的随机性仍会让两次重放产生不同结果。需要一种不依赖模型、不比较时间戳的确定性检查。
+
+**决策**：`forkpoint verify <run_id>` 连续创建两条 variant run，各重放一次；对每条事件计算 `(seq, type, spanId, parentSpanId, callsite, requestHash, responseHash, payload)` 的 SHA-256，再对事件摘要序列计算总哈希。排除 `ts` 与 `durationMs`。两次不一致时报告首个差异的 `seq` 与 `reason`（`type` / `content` / `missing`），退出码 1。baseline 未被消费的 fixture 只告警，不失败。
+
+**理由**：
+
+- 两次重放都不调用模型，比较的是程序级确定性，而不是模型采样稳定性。
+- 排除时间戳和耗时，避免正常执行速度差异造成假阳性。
+- 保留 callsite 与 request/response hash，能发现“同一 seq 但输入或输出变了”的隐性分歧。
+
+**代价**：verify 只覆盖被 Forkpoint 包装的边界；未包装的随机源和外部副作用仍可能漏检。每次 verify 产生两条 variant run，需要用户自行清理。

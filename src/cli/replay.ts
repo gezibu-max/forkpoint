@@ -23,7 +23,11 @@ export interface ReplayCommandResult {
   childExitCode: number;
 }
 
-export async function replayCommand(options: ReplayCommandOptions): Promise<number> {
+export interface ExecuteReplayOptions extends ReplayCommandOptions {
+  quiet?: boolean;
+}
+
+export async function executeReplay(options: ExecuteReplayOptions): Promise<ReplayCommandResult> {
   const store = path.resolve(options.store);
   const baseline = readBaseline(store, options.runId);
   const resolved = resolveCommand(baseline, options.command);
@@ -63,6 +67,7 @@ export async function replayCommand(options: ReplayCommandOptions): Promise<numb
     runId: variantId,
     baselineRunId: baseline.id,
     commandText,
+    quiet: options.quiet === true,
     ...(Object.keys(extraEnv).length === 0 ? {} : { extraEnv }),
   });
   const finalized = finalizeChildRun({
@@ -78,21 +83,28 @@ export async function replayCommand(options: ReplayCommandOptions): Promise<numb
       "forkpoint: the child exited without a complete replay; no run.end was recorded.",
   });
 
+  return {
+    runId: variantId,
+    baselineRunId: baseline.id,
+    status: finalized.status,
+    childExitCode: finalized.childExitCode,
+  };
+}
+
+export async function replayCommand(options: ReplayCommandOptions): Promise<number> {
+  const result = await executeReplay(options);
+
   if (options.json) {
-    printJson({
-      ok: finalized.status === "replayed",
-      baselineRunId: baseline.id,
-      ...finalized,
-    });
-  } else if (finalized.status === "replayed") {
-    process.stdout.write(`Replayed run ${variantId} from ${baseline.id}\n`);
+    printJson({ ok: result.status === "replayed", ...result });
+  } else if (result.status === "replayed") {
+    process.stdout.write(`Replayed run ${result.runId} from ${result.baselineRunId}\n`);
   } else {
-    process.stdout.write(`Replay failed; partial cassette kept for run ${variantId}\n`);
+    process.stdout.write(`Replay failed; partial cassette kept for run ${result.runId}\n`);
   }
 
-  if (outcome.error !== undefined) return 2;
-  if (outcome.code !== 0) return outcome.code ?? 1;
-  return finalized.status === "replayed" ? 0 : 1;
+  if (result.childExitCode === 2) return 2;
+  if (result.childExitCode !== 0) return result.childExitCode;
+  return result.status === "replayed" ? 0 : 1;
 }
 
 function readBaseline(store: string, runId: string): RunRow {

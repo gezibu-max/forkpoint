@@ -215,6 +215,13 @@ export class Cassette {
     return rows.map(mapEvent);
   }
 
+  countFixtures(runId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS count FROM fixtures WHERE run_id = ?")
+      .get(runId);
+    return Number(row?.count ?? 0);
+  }
+
   getEventsByType(runId: string, type: string): EventRecord[] {
     return this.db
       .prepare("SELECT * FROM events WHERE run_id = ? AND type = ? ORDER BY seq ASC")
