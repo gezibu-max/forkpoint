@@ -135,7 +135,7 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
   - 模式解析顺序：构造参数 > 环境变量 `FORKPOINT_MODE` > `"off"`。
   - `off`：所有包装器直接透传，不写文件、不装 guard。
   - `record`：创建 `runs` 行，写 `run.start`，采集元数据；Run 结束写 `run.end`（含状态与 metrics）。
-  - `replay` / `fork`：从 `FORKPOINT_RUN_ID` 加载基线 cassette；写 variant 事件；结束写 `run.end`。
+  - `replay` / `fork`：`FORKPOINT_RUN_ID` 是本次新写入的 variant Run，`FORKPOINT_BASELINE_RUN_ID` 是只读基线；从基线加载 fixture，事件写入 variant；结束写 `run.end`。baseline 不被修改，variant 的 `parent_run_id` 指向 baseline，最终状态为 `replayed`。
   - 嵌套 `fp.run` 抛出 `NestedRunError`。
 - **输出**：`fn` 的返回值原样返回；cassette 落盘。Run ID 格式为 `r_` + 26 位 Crockford Base32（ULID），由 CLI 父进程在安装时钟 patch 之前生成。
 - **异常**：
@@ -299,7 +299,7 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 - **描述**：在 replay 模式下阻断一切真实外部调用。
 - **输入**：`forkpoint replay <run_id> --strict`。
 - **处理**：
-  - 父进程 spawn 原始命令，设置 `FORKPOINT_MODE=replay`、`FORKPOINT_RUN_ID`、`FORKPOINT_STORE`。
+  - 父进程先创建 variant 行（`mode=replayed`、`parent_run_id=<baseline>`、`status=recording`），再 spawn 原始命令，设置 `FORKPOINT_MODE=replay`、`FORKPOINT_RUN_ID=<variant>`、`FORKPOINT_BASELINE_RUN_ID=<baseline>`、`FORKPOINT_STORE`。
   - SDK 构造时安装 guard：包装客户端在 replay 下永不调用真实 API；`globalThis.fetch` 被替换为抛 `LiveCallBlockedError`。
   - 包装工具在 replay 下不执行原函数。
   - guard 在 Run 结束后恢复。
@@ -642,7 +642,8 @@ LLM 指纹输入：
 | 变量 | 用途 | 设置方 |
 |---|---|---|
 | `FORKPOINT_MODE` | `record` / `replay` / `fork` / `off` | CLI 父进程 |
-| `FORKPOINT_RUN_ID` | 基线 / 当前 Run | CLI 父进程 |
+| `FORKPOINT_RUN_ID` | 当前正在写入的 Run（record 的 baseline，或 replay 的 variant） | CLI 父进程 |
+| `FORKPOINT_BASELINE_RUN_ID` | replay / fork 时读取 fixture 的只读基线 | CLI 父进程 |
 | `FORKPOINT_STORE` | cassette 目录 | CLI 父进程 |
 | `FORKPOINT_OVERRIDES` | fork 覆盖项 JSON | CLI 父进程 |
 | `FORKPOINT_DEBUG` | 打印内部日志 | 用户 |

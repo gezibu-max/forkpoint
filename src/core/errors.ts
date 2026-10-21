@@ -282,7 +282,7 @@ export class RunNotFoundError extends ForkpointError {
 export class NotImplementedError extends ForkpointError {
   constructor(feature: string) {
     super("NOT_IMPLEMENTED", `${feature} is not implemented in this build.`, {
-      hint: "This is a pre-alpha build; only record, ls, and show are available.",
+      hint: "This is a pre-alpha build; record, replay, ls, and show are available.",
     });
   }
 }

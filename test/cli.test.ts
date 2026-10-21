@@ -24,8 +24,11 @@ function cleanEnv(): NodeJS.ProcessEnv {
   delete env.OPENAI_API_KEY;
   delete env.FORKPOINT_MODE;
   delete env.FORKPOINT_RUN_ID;
+  delete env.FORKPOINT_BASELINE_RUN_ID;
+  delete env.FORKPOINT_BASELINE_MODEL;
   delete env.FORKPOINT_STORE;
   delete env.FORKPOINT_COMMAND;
+  delete env.FORKPOINT_FAIL_ON_ENV_CHANGE;
   return env;
 }
 
@@ -42,38 +45,51 @@ function run(store: string, args: string[]) {
   );
 }
 
+function recordDemo(store: string, name: string) {
+  return spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "src/cli/index.ts",
+      "record",
+      "--name",
+      name,
+      "--store",
+      store,
+      "--",
+      process.execPath,
+      "--import",
+      "tsx",
+      "examples/sql-agent/index.ts",
+    ],
+    {
+      cwd: repoRoot,
+      env: cleanEnv(),
+      encoding: "utf8",
+      timeout: 60_000,
+    },
+  );
+}
+
+function recordedRunId(stdout: string): string {
+  const match = /Recorded run (r_[0-9a-hjkmnp-tv-z]{26})/.exec(stdout);
+  if (match === null) throw new Error(`no run id in output: ${stdout}`);
+  return match[1]!;
+}
+
+function trailingJson(stdout: string): unknown {
+  const start = stdout.lastIndexOf("\n{");
+  return JSON.parse(start === -1 ? stdout : stdout.slice(start + 1));
+}
+
 describe("CLI integration", () => {
   it("records the demo and exposes it through show and ls", () => {
     const store = makeStore();
-    const record = spawnSync(
-      process.execPath,
-      [
-        "--import",
-        "tsx",
-        "src/cli/index.ts",
-        "record",
-        "--name",
-        "cli-integration",
-        "--store",
-        store,
-        "--",
-        process.execPath,
-        "--import",
-        "tsx",
-        "examples/sql-agent/index.ts",
-      ],
-      {
-        cwd: repoRoot,
-        env: cleanEnv(),
-        encoding: "utf8",
-        timeout: 60_000,
-      },
-    );
+    const record = recordDemo(store, "cli-integration");
 
     expect(record.status, record.stderr).toBe(0);
-    const match = /Recorded run (r_[0-9a-hjkmnp-tv-z]{26})/.exec(record.stdout);
-    expect(match).not.toBeNull();
-    const runId = match![1]!;
+    const runId = recordedRunId(record.stdout);
 
     const cassette = openCassette(store);
     try {
@@ -93,6 +109,52 @@ describe("CLI integration", () => {
     expect(ls.status, ls.stderr).toBe(0);
     const listed = JSON.parse(ls.stdout) as { runs: Array<{ id: string }> };
     expect(listed.runs.map((entry) => entry.id)).toContain(runId);
+  });
+
+  it("replays a recorded run offline into a new run row", () => {
+    const store = makeStore();
+    const record = recordDemo(store, "cli-replay");
+    expect(record.status, record.stderr).toBe(0);
+    const runId = recordedRunId(record.stdout);
+
+    const before = openCassette(store);
+    let baselineEvents = 0;
+    try {
+      baselineEvents = before.countEvents(runId);
+    } finally {
+      before.close();
+    }
+
+    const replay = run(store, ["replay", runId, "--json"]);
+    expect(replay.status, replay.stderr).toBe(0);
+    expect(replay.stdout).toContain("scripted run");
+
+    const result = trailingJson(replay.stdout) as {
+      ok: boolean;
+      runId: string;
+      baselineRunId: string;
+      status: string;
+    };
+    expect(result.ok).toBe(true);
+    expect(result.baselineRunId).toBe(runId);
+    expect(result.status).toBe("replayed");
+
+    const cassette = openCassette(store);
+    try {
+      const baseline = cassette.getRun(runId);
+      expect(baseline?.status).toBe("recorded");
+      expect(cassette.countEvents(runId)).toBe(baselineEvents);
+
+      const variant = cassette.getRun(result.runId);
+      expect(variant?.mode).toBe("replayed");
+      expect(variant?.status).toBe("replayed");
+      expect(variant?.parentRunId).toBe(runId);
+      expect(cassette.countEvents(result.runId)).toBeGreaterThan(10);
+      expect(cassette.hasEventType(result.runId, "tool.error")).toBe(true);
+      expect(cassette.hasEventType(result.runId, "clock.now")).toBe(true);
+    } finally {
+      cassette.close();
+    }
   });
 
   it("marks a command that never starts fp.run as failed", () => {

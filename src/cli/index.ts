@@ -12,6 +12,12 @@ import {
   recordHelp,
   toRecordOptions,
 } from "./record.js";
+import {
+  parseReplayArguments,
+  replayCommand,
+  replayHelp,
+  toReplayOptions,
+} from "./replay.js";
 
 interface CommonOptions {
   store?: string;
@@ -28,6 +34,8 @@ const argv = process.argv.slice(2);
 
 if (argv[0] === "record") {
   await runRecord(argv.slice(1));
+} else if (argv[0] === "replay") {
+  await runReplay(argv.slice(1));
 } else if (argv.length === 0) {
   buildProgram().outputHelp();
 } else {
@@ -44,6 +52,21 @@ async function runRecord(args: string[]): Promise<void> {
       return;
     }
     process.exitCode = await recordCommand(toRecordOptions(parsed));
+  } catch (error) {
+    process.exitCode = printError(error, { json: wantsJson, debug: args.includes("--debug") });
+  }
+}
+
+async function runReplay(args: string[]): Promise<void> {
+  const wantsJson = args.includes("--json");
+  try {
+    const parsed = parseReplayArguments(args);
+    if (parsed === "help") {
+      process.stdout.write(`${replayHelp()}\n`);
+      process.exitCode = 0;
+      return;
+    }
+    process.exitCode = await replayCommand(toReplayOptions(parsed));
   } catch (error) {
     process.exitCode = printError(error, { json: wantsJson, debug: args.includes("--debug") });
   }
@@ -73,6 +96,16 @@ function buildProgram(): Command {
     .action(() => {
       throw new UsageError(
         "record must be the first argument: forkpoint record --name <name> -- <command...>",
+      );
+    });
+
+  program
+    .command("replay")
+    .description("Replay a recorded run against the cassette")
+    .allowUnknownOption(true)
+    .action(() => {
+      throw new UsageError(
+        "replay must be the first argument: forkpoint replay <run_id> [-- <command...>]",
       );
     });
 

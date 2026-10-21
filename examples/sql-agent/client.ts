@@ -10,7 +10,7 @@ export interface ChatClient {
 
 export interface ClientSelection {
   client: ChatClient;
-  kind: "openai" | "scripted";
+  kind: "openai" | "scripted" | "replay";
   model: string;
 }
 
@@ -28,6 +28,22 @@ export function createClient(): ClientSelection {
     "[demo] OPENAI_API_KEY is not set; using the scripted offline client. This is not a real model run.\n",
   );
   return { client: new ScriptedClient(), kind: "scripted", model: "scripted-model" };
+}
+
+export function createReplayClient(model: string): ClientSelection {
+  return {
+    client: {
+      chat: {
+        completions: {
+          create: async () => {
+            throw new Error("A live LLM call was attempted during strict replay.");
+          },
+        },
+      },
+    },
+    kind: "replay",
+    model,
+  };
 }
 
 interface ToolCall {

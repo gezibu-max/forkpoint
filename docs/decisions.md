@@ -169,3 +169,39 @@
 - 半个流无法重放，静默降级会让用户以为录制成功。
 
 **代价**：v0.1 不支持流式 Agent；D4–D7 再实现 `llm.chunk` 与 `stream.aborted`。
+
+---
+
+## ADR-011：replay 写入新的 variant run，baseline 不可变
+
+**背景**：重放需要产生自己的事件序列（包括失败与 warning），但 baseline 是之后 fork/diff 的对照基准。若把重放事件写回 baseline，第一次重放就会污染对照数据。
+
+**决策**：CLI 父进程先创建一条 `mode=replayed`、`parent_run_id=<baseline>`、`status=recording` 的 variant run，再 spawn 子进程；`FORKPOINT_RUN_ID` 指向 variant，`FORKPOINT_BASELINE_RUN_ID` 指向 baseline。fixture 只从 baseline 读，事件只写 variant，最终状态为 `replayed` 或 `failed`。
+
+**理由**：
+
+- baseline 永远保持录制时的原样，重放多少次都不会改变对照基准。
+- 每次重放都有独立的 run id、事件序列和失败原因，可以单独 `show`。
+- diff 可以直接比较 baseline 与 variant，而不需要额外快照。
+
+**代价**：cassette 会随重放次数增长；需要用 `forkpoint rm`（规划中）或手动清理旧 variant。当前不自动删除。
+
+---
+
+## ADR-012：clock / RNG 在重放时消费录制序列，而不是重新采样
+
+**背景**：只记录时间与随机数不足以复现分支；重放时若再次读取真实时钟或 RNG，agent 仍可能走不同路径。这是与“只录 LLM/tool”方案的核心差异。
+
+**决策**：
+
+- clock：patch `Date.now`、无参 `new Date()` / `Date()`、`performance.now`；重放按 `clock.now` 事件顺序消费。耗尽后冻结在最后一个值并写一次 warning；来源不匹配抛 `NondeterminismError`。
+- RNG：patch `Math.random`、`crypto.randomUUID`、`crypto.getRandomValues`；重放按 `rng.value` 事件顺序消费。来源不匹配抛 `RngMismatchError`，耗尽抛 `RngExhaustedError`，不冻结、不补值。
+- 录制阶段 clock 读取上限 10,000 次，防止循环内读时钟把 cassette 撑爆。
+
+**理由**：
+
+- clock 冻结是保守降级：时间继续前进不会凭空创造未录制的事实，但会显式告警。
+- RNG 不能冻结：重复返回同一个随机值会静默改变程序语义，宁可失败。
+- 严格按序消费能在“分支改变导致少读/多读”时立刻暴露问题。
+
+**代价**：patch 前已缓存的函数引用（例如 `const now = Date.now`）不会被拦截；子进程、原生扩展和未包装的随机源也不在承诺内。这些限制写入 `limits.md`（规划中）。

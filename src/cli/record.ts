@@ -1,11 +1,11 @@
 import path from "node:path";
-import spawn from "cross-spawn";
 import { collectRunMetadata, formatCommand } from "../core/env.js";
 import type { RunStatus } from "../core/events.js";
 import { UsageError } from "../core/errors.js";
 import { createRunId } from "../core/ulid.js";
-import { openCassette, openExistingCassette } from "../store/cassette.js";
-import { printError, printJson } from "./output.js";
+import { openCassette } from "../store/cassette.js";
+import { finalizeChildRun, spawnChild } from "./child.js";
+import { printJson } from "./output.js";
 
 export interface RecordCommandOptions {
   name: string;
@@ -40,13 +40,32 @@ export async function recordCommand(options: RecordCommandOptions): Promise<numb
       ...(metadata.gitSha === undefined ? {} : { gitSha: metadata.gitSha }),
       nodeVersion: metadata.nodeVersion,
       platform: metadata.platform,
+      config: { argv: [options.command, ...options.args] },
     });
   } finally {
     cassette.close();
   }
 
-  const outcome = await spawnChild(options, runId, store, commandText);
-  const finalized = finalizeRun(runId, store, outcome, options);
+  const outcome = await spawnChild({
+    command: options.command,
+    args: options.args,
+    store,
+    mode: "record",
+    runId,
+    commandText,
+  });
+  const finalized = finalizeChildRun({
+    runId,
+    store,
+    outcome,
+    finalStatus: "recorded",
+    json: options.json,
+    debug: options.debug,
+    missingStartMessage:
+      "forkpoint: the child process never started a run. Did it call fp.run()?",
+    incompleteMessage:
+      "forkpoint: the child exited without a complete run; no run.end was recorded.",
+  });
 
   if (options.json) {
     printJson({ ok: finalized.status === "recorded", ...finalized });
@@ -61,120 +80,6 @@ export async function recordCommand(options: RecordCommandOptions): Promise<numb
   if (outcome.error !== undefined) return 2;
   if (outcome.code !== 0) return outcome.code ?? 1;
   return finalized.status === "recorded" ? 0 : 1;
-}
-
-interface ChildOutcome {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-  error?: Error;
-}
-
-function spawnChild(
-  options: RecordCommandOptions,
-  runId: string,
-  store: string,
-  commandText: string,
-): Promise<ChildOutcome> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const settle = (outcome: ChildOutcome): void => {
-      if (settled) return;
-      settled = true;
-      resolve(outcome);
-    };
-
-    const child = spawn(options.command, options.args, {
-      stdio: "inherit",
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        FORKPOINT_MODE: "record",
-        FORKPOINT_RUN_ID: runId,
-        FORKPOINT_STORE: store,
-        FORKPOINT_COMMAND: commandText,
-      },
-    });
-
-    child.once("error", (error) => {
-      settle({ code: null, signal: null, error });
-    });
-    child.once("exit", (code, signal) => {
-      settle({ code, signal });
-    });
-  });
-}
-
-function finalizeRun(
-  runId: string,
-  store: string,
-  outcome: ChildOutcome,
-  options: RecordCommandOptions,
-): RecordCommandResult {
-  const cassette = openExistingCassette(store);
-  if (cassette === undefined) {
-    printError(new Error(`cassette disappeared from ${store}`), options);
-    return {
-      runId,
-      status: "failed",
-      childExitCode: outcome.error === undefined ? outcome.code ?? 1 : 2,
-    };
-  }
-
-  try {
-    const run = cassette.getRun(runId);
-    if (run === undefined) {
-      printError(new Error(`run row ${runId} disappeared`), options);
-      return {
-        runId,
-        status: "failed",
-        childExitCode: outcome.error === undefined ? outcome.code ?? 1 : 2,
-      };
-    }
-
-    if (run.status === "recording" || run.status === "recorded") {
-      const failed = outcome.error !== undefined || outcome.signal !== null || outcome.code !== 0;
-      const hasStart = cassette.hasEventType(runId, "run.start");
-      const hasEnd = cassette.hasEventType(runId, "run.end");
-
-      if (!hasStart) {
-        process.stderr.write(
-          "forkpoint: the child process never started a run. Did it call fp.run()?\n",
-        );
-      }
-
-      if (failed) {
-        if (hasStart && !hasEnd) {
-          cassette.appendEvent(runId, {
-            type: "run.end",
-            payload: {
-              status: "failed",
-              error:
-                outcome.error?.message ??
-                (outcome.signal === null
-                  ? `child exited with code ${String(outcome.code)} before completing the run`
-                  : `child terminated by ${outcome.signal}`),
-            },
-          });
-        }
-        cassette.flush();
-        cassette.updateRunStatus(runId, "failed");
-      } else if (!hasStart || !hasEnd) {
-        process.stderr.write(
-          "forkpoint: the child exited without a complete run; no run.end was recorded.\n",
-        );
-        cassette.updateRunStatus(runId, "failed");
-      }
-    }
-
-    const finalRun = cassette.getRun(runId);
-    return {
-      runId,
-      status: finalRun?.status ?? "failed",
-      childExitCode: outcome.error === undefined ? outcome.code ?? 1 : 2,
-    };
-  } finally {
-    cassette.close();
-  }
 }
 
 interface ParsedRecordArguments {

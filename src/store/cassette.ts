@@ -215,6 +215,13 @@ export class Cassette {
     return rows.map(mapEvent);
   }
 
+  getEventsByType(runId: string, type: string): EventRecord[] {
+    return this.db
+      .prepare("SELECT * FROM events WHERE run_id = ? AND type = ? ORDER BY seq ASC")
+      .all(runId, type)
+      .map(mapEvent);
+  }
+
   putFixture(runId: string, fixture: FixtureInput): void {
     try {
       this.insertFixture.run(

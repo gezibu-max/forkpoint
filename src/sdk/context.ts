@@ -10,11 +10,16 @@ export interface RunCounters {
 
 export interface RunContext {
   runId: string;
+  baselineRunId?: string;
   name: string;
   mode: Mode;
   cassette: Cassette;
   occurrences: Map<string, number>;
   counters: RunCounters;
+}
+
+export function fixtureRunId(context: RunContext): string {
+  return context.baselineRunId ?? context.runId;
 }
 
 const storage = new AsyncLocalStorage<RunContext>();

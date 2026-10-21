@@ -1,8 +1,13 @@
 const dateNow = Date.now.bind(Date);
 const hrtime = process.hrtime.bigint.bind(process.hrtime);
+const performanceNow = performance.now.bind(performance);
 
 export function realNow(): number {
   return dateNow();
+}
+
+export function realPerformanceNow(): number {
+  return performanceNow();
 }
 
 export function monotonicNow(): bigint {

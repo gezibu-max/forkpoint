@@ -8,7 +8,14 @@ import {
 } from "../core/errors.js";
 import { canonicalize, fingerprintValue } from "../core/fingerprint.js";
 import { toJsonText } from "../core/serialize.js";
-import { currentRun, isArmed, nextOccurrence } from "./context.js";
+import { currentRun, isArmed, nextOccurrence, type RunContext } from "./context.js";
+import {
+  cloneJson,
+  fixtureResponse,
+  getReplayFixture,
+  isObject,
+  recordedError,
+} from "./replay.js";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -110,8 +117,8 @@ async function handleLlmCall(
     return original.apply(owner, args);
   }
 
-  if (context.mode !== "record") {
-    throw new NotImplementedError("LLM replay");
+  if (context.mode === "fork") {
+    throw new NotImplementedError("LLM fork");
   }
 
   if (!isObject(rawRequest)) {
@@ -137,6 +144,10 @@ async function handleLlmCall(
     callsite,
     requestHash,
   });
+
+  if (context.mode === "replay") {
+    return replayLlmCall(context, requestHash, occurrence, callsite, stream);
+  }
 
   const startedAt = monotonicNow();
   let response: unknown;
@@ -200,6 +211,51 @@ async function handleLlmCall(
   });
 
   return response;
+}
+
+async function replayLlmCall(
+  context: RunContext,
+  requestHash: string,
+  occurrence: number,
+  callsite: string,
+  stream: boolean,
+): Promise<unknown> {
+  const fixture = getReplayFixture(context, "llm", requestHash, occurrence, callsite);
+  const meta = isObject(fixture.meta) ? fixture.meta : {};
+
+  const recorded = recordedError(meta);
+  if (recorded !== undefined) {
+    context.cassette.appendEvent(context.runId, {
+      type: "llm.error",
+      payload: { name: recorded.name, message: recorded.message, aborted: meta.aborted === true },
+      callsite,
+      requestHash,
+    });
+    throw recorded;
+  }
+
+  const plainResponse = cloneJson(fixtureResponse(context, fixture));
+  const responseHash = fingerprintValue(plainResponse);
+  const usage = isObject(plainResponse) && isObject(plainResponse.usage) ? plainResponse.usage : undefined;
+  const finishReason = readFinishReason(plainResponse);
+  const responseId =
+    isObject(plainResponse) && typeof plainResponse.id === "string" ? plainResponse.id : undefined;
+
+  context.cassette.appendEvent(context.runId, {
+    type: "llm.response",
+    payload: {
+      response: plainResponse,
+      ...(usage === undefined ? {} : { usage }),
+      ...(finishReason === undefined ? {} : { finishReason }),
+      ...(responseId === undefined ? {} : { responseId }),
+      stream,
+    },
+    callsite,
+    requestHash,
+    responseHash,
+  });
+
+  return plainResponse;
 }
 
 function sanitizeRequest(request: UnknownRecord): UnknownRecord {
@@ -273,8 +329,4 @@ function isAborted(error: unknown, request: UnknownRecord): boolean {
 function bindMember(target: object, property: PropertyKey, receiver: unknown): unknown {
   const value = Reflect.get(target, property, receiver);
   return typeof value === "function" ? value.bind(target) : value;
-}
-
-function isObject(value: unknown): value is UnknownRecord {
-  return typeof value === "object" && value !== null;
 }
