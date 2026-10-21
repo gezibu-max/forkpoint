@@ -5,7 +5,7 @@
 - 状态：Pre-alpha，文档阶段，尚未有实现
 - 前身：AgentTape v0.1 草稿（2026-10-21）
 - 项目性质：单人、3 周、开源、求职作品集
-- 仓库：`github.com/gezibu-max/forkpoint`（规划）
+- 仓库：https://github.com/gezibu-max/forkpoint
 - npm 包名：`forkpoint`（2026-10-21 查询未被占用）
 - 许可：Apache-2.0
 
