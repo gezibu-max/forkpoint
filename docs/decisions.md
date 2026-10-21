@@ -221,3 +221,19 @@
 - 保留 callsite 与 request/response hash，能发现“同一 seq 但输入或输出变了”的隐性分歧。
 
 **代价**：verify 只覆盖被 Forkpoint 包装的边界；未包装的随机源和外部副作用仍可能漏检。每次 verify 产生两条 variant run，需要用户自行清理。
+
+---
+
+## ADR-014：diff 以 callsite + ordinal 对齐，而不是请求指纹
+
+**背景**：fork 或改 prompt 后，同一调用点的请求指纹必然变化。若按 `(kind, fingerprint, occurrence)` 对齐，所有步骤都会变成“未匹配”，首次分歧会被错误地报在第 1 步。
+
+**决策**：v0.1 的 diff 按 `(kind, callsite, 同 callsite 内 ordinal)` 配对；tool 额外带 tool name。缺少 callsite 时以 `unknown` 分组，仍按 ordinal 顺序配对。配对后依次比较：异常 → 请求指纹 → 响应指纹。字段差异递归展开，报告中截断长文本。未配对的步骤标记为 `missing_step` / `added_step`，归入 `unclassified`。
+
+**理由**：
+
+- callsite 在改 prompt、改模型后保持稳定，正好覆盖 fork 的核心场景。
+- ordinal 能区分同一行的循环 / 并发发起顺序（顺序本身不确定时仍会显式暴露为分歧）。
+- 指纹仍作为配对后的比较内容，而不是配对键；请求变了也能指出“同一个调用点变了什么”。
+
+**代价**：分支改变导致 callsite 集合变化时，v0.1 只报最早未配对步骤，不做序列对齐（如 LCS）。并发未完成的调用按最近一个 pending step 归属；当前不支持并发 in-flight 调用。JSON 报告只含哈希与截断预览，不含完整请求体。

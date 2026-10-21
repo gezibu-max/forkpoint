@@ -157,6 +157,51 @@ describe("CLI integration", () => {
     }
   });
 
+  it("diffs a replay variant against its baseline with no behavioral divergence", () => {
+    const store = makeStore();
+    const record = recordDemo(store, "cli-diff");
+    expect(record.status, record.stderr).toBe(0);
+    const runId = recordedRunId(record.stdout);
+
+    const replay = run(store, ["replay", runId, "--json"]);
+    expect(replay.status, replay.stderr).toBe(0);
+    const variant = trailingJson(replay.stdout) as { runId: string };
+
+    const diff = run(store, ["diff", runId, variant.runId, "--json"]);
+    expect(diff.status, diff.stderr).toBe(0);
+    const report = JSON.parse(diff.stdout) as {
+      base: { id: string; mode: string };
+      variant: { id: string; mode: string };
+      firstDivergence: unknown;
+      steps: Array<{ status: string }>;
+      metrics: { base: { llmCalls: number; toolCalls: number; totalTokens: number } };
+    };
+
+    expect(report.base.id).toBe(runId);
+    expect(report.variant.id).toBe(variant.runId);
+    expect(report.variant.mode).toBe("replayed");
+    expect(report.firstDivergence).toBeNull();
+    expect(report.steps.length).toBeGreaterThan(5);
+    expect(report.steps.every((step) => step.status === "same")).toBe(true);
+    expect(report.metrics.base).toMatchObject({ llmCalls: 5, toolCalls: 5, totalTokens: 2400 });
+
+    const output = path.join(store, "diff.json");
+    const toFile = run(store, ["diff", runId, variant.runId, "--format", "json", "-o", output]);
+    expect(toFile.status, toFile.stderr).toBe(0);
+    expect(toFile.stdout).toContain("Wrote");
+  });
+
+  it("rejects diffing a run against itself", () => {
+    const store = makeStore();
+    const record = recordDemo(store, "cli-diff-self");
+    expect(record.status, record.stderr).toBe(0);
+    const runId = recordedRunId(record.stdout);
+
+    const diff = run(store, ["diff", runId, runId, "--json"]);
+    expect(diff.status).toBe(2);
+    expect(diff.stderr).toContain("Cannot diff a run against itself");
+  });
+
   it("verifies that two replays produce identical event hashes", () => {
     const store = makeStore();
     const record = recordDemo(store, "cli-verify");

@@ -4,7 +4,7 @@
 
 **Forkpoint 是 Agent 的可复现运行层。** 录制一次真实运行，离线严格重放；换模型、改 prompt、改 tool schema 后，指出第一次分歧发生在哪一步。
 
-**状态：pre-alpha。** 已能录制一次完整的 Text2SQL agent 运行，离线严格重放到新的 variant run，并用 `verify` 连续两次重放、比较稳定事件哈希；clock / RNG 在重放时受控，live fetch 被拦截。fork、diff 尚未实现。
+**状态：pre-alpha。** 已能录制一次完整的 Text2SQL agent 运行，离线严格重放到新的 variant run，用 `verify` 连续两次重放、比较稳定事件哈希，并用 `diff` 按 callsite 对齐两个 Run、定位首个行为分歧。clock / RNG 在重放时受控，live fetch 被拦截。fork 尚未实现。
 
 ---
 
@@ -28,7 +28,7 @@ record  →  strict replay  →  fork  →  diff
 | Replay | 不调用模型、不联网，按请求指纹回放，输出与录制时一致 | 已实现（非流式） |
 | Verify | 连续两次重放，排除时间戳与耗时的稳定事件哈希必须一致 | 已实现 |
 | Fork | 替换模型 / 温度 / system prompt，工具世界冻结，LLM 步骤重新决策 | 未实现 |
-| Diff | 输出首次分歧的 `seq`、`callsite`、类型，以及 token / 成本 / 延迟对比 | 未实现 |
+| Diff | 按 `callsite + ordinal` 对齐，输出首次分歧、字段差异、token / 延迟对比 | 已实现（Markdown / JSON） |
 
 **关键点：它不重放模型，重放事实。** 录制时模型的输出已经发生；重放时不采样，只回放。fork 时才调用新模型，而且只让被改动的变量重新决策。
 
@@ -76,6 +76,7 @@ await fp.run("sql-agent-fail", async () =>
 npx forkpoint record --name sql-agent-fail -- tsx examples/sql-agent/index.ts
 npx forkpoint replay <run_id>
 npx forkpoint verify <run_id>
+npx forkpoint diff <base_run_id> <variant_run_id>
 npx forkpoint ls
 npx forkpoint show <run_id> --events
 
@@ -87,6 +88,8 @@ npx forkpoint diff <base> <variant> -o reports/model-swap.md
 `replay` 会创建一条新的 variant run（`mode=replayed`、`parent_run_id=<baseline>`），baseline 不会被修改。重放时读取 baseline 的 fixture，事件写入 variant；缺失的请求、变化的 clock/RNG 序列、任何 live `fetch` 都会显式失败。写工具（`write: true`）不执行，只回放结果并记录 `WRITE_TOOL_NOT_EXECUTED` 警告。
 
 `verify` 以 strict 模式连续重放两次，对 `(seq, type, span, callsite, requestHash, responseHash, payload)` 计算哈希，排除 `ts` 与 `durationMs`。两次不一致时输出首个差异的 `seq` 与类型，并把命令退出码置为 1。
+
+`diff` 把两个 Run 的 LLM / tool 调用按 `callsite + 同 callsite 内的 ordinal` 配对，输出首个 `request_mismatch` / `response_changed` / `error_changed` / `missing_step` / `added_step`，并附带字段级差异与 token / 延迟表。两个独立录制若 prompt 里嵌入了时间戳，会如实报告该时间戳差异；需要行为对比时，优先用 strict replay 的 variant。
 
 ### 跑一遍 demo
 
@@ -114,7 +117,7 @@ npx tsx src/cli/index.ts show <run_id> --events
 | D1–D3 | 骨架、schema、canonical fingerprint、Text2SQL demo、record CLI（已完成） |
 | D4–D7 | 录制：clock / RNG（已完成）、流式 LLM、脱敏 |
 | D8–D10 | strict replay、guard、verify（已完成）；止损检查 |
-| D11–D14 | fork、diff、mutation benchmark、README / decisions / limits / prior-art |
+| D11–D14 | fork、diff（已完成）、mutation benchmark、README / decisions / limits / prior-art |
 | D15–D21 | 博客、视频、GitHub Action、v0.1.0 |
 
 ## 设计原则

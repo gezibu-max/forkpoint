@@ -373,8 +373,9 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 - **描述**：在请求变化时仍能把 variant 与基线对齐，定位首次分歧。
 - **输入**：基线 Run、variant Run。
 - **处理**：
-  - 对齐优先级：`callsite` → `(kind, fingerprint, occurrence)` → `seq`。
-  - 同一 callsite 多次出现时按 occurrence 配对。
+  - v0.1 对齐键：`(kind, callsite, 同 callsite 内 ordinal)`；tool 额外带 name；缺少 callsite 时按 `unknown` 分组。
+  - fingerprint 只用于配对后的比较，不作为对齐键，避免改 prompt / 模型后指纹全变导致所有步骤失配。
+  - 未配对步骤标记 `missing_step` / `added_step`；分支重排的序列对齐（LCS）不在 v0.1。
   - 工具 fixture 一律来自基线；若 variant 请求了基线不存在的工具参数，记录 `fixture_miss`。
   - 对齐但请求不同的事件，记录 `request_mismatch` 并高亮差异字段。
   - 报告注明所用的对齐策略。
@@ -391,7 +392,7 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
   - 报告章节：Summary、First divergence、Event timeline、Cost & latency、Caveats。
   - 最终输出 diff：文本按行；JSON 按 key 路径。
   - 指标：步数、LLM 调用次数、token、估算成本、延迟。
-  - 成本使用录制时 pricing 快照；`--pricing-file` 可覆盖；标注“基于录制时价格”。
+  - 成本使用录制时 pricing 快照；`--pricing-file` 可覆盖；标注“基于录制时价格”。v0.1 报告暂只输出 token 与延迟，成本估算留到有 pricing 快照之后。
   - JSON 格式（P1）字段见 §4.6。
 - **输出**：Markdown 或 JSON 文件/标准输出。
 - **异常**：Run 不存在或类型不匹配 → 退出码 2。

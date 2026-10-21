@@ -24,6 +24,12 @@ import {
   verifyCommand,
   verifyHelp,
 } from "./verify.js";
+import {
+  diffCommand,
+  diffHelp,
+  parseDiffArguments,
+  toDiffOptions,
+} from "./diff.js";
 
 interface CommonOptions {
   store?: string;
@@ -44,6 +50,8 @@ if (argv[0] === "record") {
   await runReplay(argv.slice(1));
 } else if (argv[0] === "verify") {
   await runVerify(argv.slice(1));
+} else if (argv[0] === "diff") {
+  await runDiff(argv.slice(1));
 } else if (argv.length === 0) {
   buildProgram().outputHelp();
 } else {
@@ -95,6 +103,25 @@ async function runVerify(args: string[]): Promise<void> {
   }
 }
 
+async function runDiff(args: string[]): Promise<void> {
+  const formatIndex = args.indexOf("--format");
+  const wantsJson =
+    args.includes("--json") ||
+    args.includes("--format=json") ||
+    (formatIndex !== -1 && args[formatIndex + 1] === "json");
+  try {
+    const parsed = parseDiffArguments(args);
+    if (parsed === "help") {
+      process.stdout.write(`${diffHelp()}\n`);
+      process.exitCode = 0;
+      return;
+    }
+    process.exitCode = await diffCommand(toDiffOptions(parsed));
+  } catch (error) {
+    process.exitCode = printError(error, { json: wantsJson, debug: args.includes("--debug") });
+  }
+}
+
 function buildProgram(): Command {
   const program = new Command();
   program
@@ -139,6 +166,16 @@ function buildProgram(): Command {
     .action(() => {
       throw new UsageError(
         "verify must be the first argument: forkpoint verify <run_id>",
+      );
+    });
+
+  program
+    .command("diff")
+    .description("Compare two runs and locate the first divergence")
+    .allowUnknownOption(true)
+    .action(() => {
+      throw new UsageError(
+        "diff must be the first argument: forkpoint diff <base> <variant>",
       );
     });
 
