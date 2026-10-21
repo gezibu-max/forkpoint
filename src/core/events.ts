@@ -1,6 +1,6 @@
 export type Mode = "record" | "replay" | "fork" | "off";
 export type StoredRunMode = "recorded" | "replayed" | "forked";
-export type RunStatus = "recording" | "recorded" | "replayed" | "failed";
+export type RunStatus = "recording" | "recorded" | "replayed" | "forked" | "failed";
 
 export interface Usage {
   prompt_tokens?: number;

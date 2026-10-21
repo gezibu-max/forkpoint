@@ -9,12 +9,12 @@ interface RngPoint {
 }
 
 export function installRngBoundary(context: RunContext): () => void {
-  const replay = context.mode === "replay";
-  const recorded = replay ? loadRecordedRng(context) : [];
+  const controlled = context.baselineRunId !== undefined;
+  const recorded = controlled ? loadRecordedRng(context) : [];
   let index = 0;
 
   function next(source: string, produce: () => string): string {
-    if (!replay) {
+    if (!controlled) {
       const value = produce();
       appendRngEvent(context, source, value);
       return value;
@@ -51,7 +51,7 @@ export function installRngBoundary(context: RunContext): () => void {
   ): ArrayBufferView | null {
     if (array === null) return array;
     const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
-    if (replay) {
+    if (controlled) {
       const value = next("crypto.getRandomValues", () => "");
       const recordedBytes = Buffer.from(value, "base64");
       if (recordedBytes.length !== bytes.length) {

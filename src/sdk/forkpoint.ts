@@ -20,7 +20,7 @@ import {
   UsageError,
 } from "../core/errors.js";
 import { isRunId, createRunId } from "../core/ulid.js";
-import { openCassette, type Cassette } from "../store/cassette.js";
+import { openCassette, type Cassette, type RunRow } from "../store/cassette.js";
 import { installClockBoundary } from "./clock-boundary.js";
 import {
   armInstance,
@@ -30,6 +30,12 @@ import {
   type RunContext,
 } from "./context.js";
 import { wrapOpenAI } from "./llm.js";
+import {
+  hasForkOverrides,
+  parseForkOverrides,
+  validateForkOverrides,
+  type ForkOverrides,
+} from "./overrides.js";
 import { installRngBoundary } from "./rng-boundary.js";
 
 export interface RedactionRule {
@@ -55,6 +61,7 @@ export interface ForkpointOptions {
   envWhitelist?: string[];
   pricing?: PricingTable;
   failOnEnvChange?: boolean;
+  overrides?: ForkOverrides;
 }
 
 export class Forkpoint {
@@ -66,6 +73,7 @@ export class Forkpoint {
   readonly redact: RedactionRule[];
   readonly pricing: PricingTable;
   readonly failOnEnvChange: boolean;
+  readonly overrides: ForkOverrides;
 
   constructor(options: ForkpointOptions = {}) {
     this.mode = resolveMode(options.mode);
@@ -77,6 +85,12 @@ export class Forkpoint {
     this.pricing = { ...(options.pricing ?? {}) };
     this.failOnEnvChange =
       options.failOnEnvChange ?? process.env.FORKPOINT_FAIL_ON_ENV_CHANGE === "1";
+    this.overrides =
+      options.overrides !== undefined
+        ? validateForkOverrides(options.overrides)
+        : this.mode === "fork"
+          ? parseForkOverrides(process.env.FORKPOINT_OVERRIDES)
+          : {};
 
     if (this.mode !== "off") armInstance(this);
   }
@@ -92,7 +106,8 @@ export class Forkpoint {
     if (typeof fn !== "function") throw new UsageError("fp.run() expects a function.");
     if (this.mode === "off") return await fn();
     if (this.mode === "record") return this.runRecord(name, fn);
-    if (this.mode === "replay") return this.runReplay(name, fn);
+    if (this.mode === "replay") return this.runVariant("replay", name, fn);
+    if (this.mode === "fork") return this.runVariant("fork", name, fn);
     throw new NotImplementedError(`Mode "${this.mode}"`);
   }
 
@@ -199,15 +214,26 @@ export class Forkpoint {
     }
   }
 
-  private async runReplay<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
+  private async runVariant<T>(
+    kind: "replay" | "fork",
+    name: string,
+    fn: () => Promise<T> | T,
+  ): Promise<T> {
+    const label = kind === "replay" ? "Replay" : "Fork";
+    const storedMode = kind === "replay" ? "replayed" : "forked";
     const baselineRunId = this.baselineRunId ?? process.env.FORKPOINT_BASELINE_RUN_ID;
     if (baselineRunId === undefined || baselineRunId === "") {
       throw new UsageError(
-        "Replay requires a baseline run id. Use `forkpoint replay <run_id>` or set FORKPOINT_BASELINE_RUN_ID.",
+        `${label} requires a baseline run id. Use \`forkpoint ${kind} <run_id>\` or set FORKPOINT_BASELINE_RUN_ID.`,
       );
     }
     if (!isRunId(baselineRunId)) {
       throw new UsageError(`Not a valid Forkpoint run id: ${baselineRunId}`);
+    }
+    if (kind === "fork" && !hasForkOverrides(this.overrides)) {
+      throw new UsageError(
+        "Fork requires at least one override: model, temperature, or systemPrompt.",
+      );
     }
 
     const cassette = openCassette(this.storeDir);
@@ -218,24 +244,29 @@ export class Forkpoint {
       const runId = this.runId ?? process.env.FORKPOINT_RUN_ID ?? createRunId();
       if (!isRunId(runId)) throw new UsageError(`Not a valid Forkpoint run id: ${runId}`);
       if (runId === baseline.id) {
-        throw new UsageError("Replay needs a new run id; refusing to overwrite the baseline run.");
+        throw new UsageError(`${label} needs a new run id; refusing to overwrite the baseline run.`);
       }
 
-      const effectiveName = baseline.name;
       const command =
         process.env.FORKPOINT_COMMAND ??
         baseline.command ??
         formatCommand(process.argv[0] ?? "node", process.argv.slice(1));
       const metadata = collectRunMetadata(command);
       const environment = captureEnvironment(this.envWhitelist);
+      const baselineOverrides = storedOverrides(baseline);
+      const overrides =
+        kind === "fork"
+          ? { ...(baselineOverrides ?? {}), ...this.overrides }
+          : baselineOverrides;
 
       const existing = cassette.getRun(runId);
+      const effectiveName = existing?.name ?? baseline.name;
       if (existing === undefined) {
         cassette.createRun({
           id: runId,
           name: effectiveName,
           parentRunId: baseline.id,
-          mode: "replayed",
+          mode: storedMode,
           status: "recording",
           command: metadata.command,
           cwd: metadata.cwd,
@@ -244,7 +275,9 @@ export class Forkpoint {
           platform: metadata.platform,
           config: {
             argv: process.argv,
-            replayedFrom: baseline.id,
+            ...(kind === "replay"
+              ? { replayedFrom: baseline.id }
+              : { forkedFrom: baseline.id, overrides }),
             envWhitelist: this.envWhitelist,
             redactionRules: this.redact.map((rule) => rule.name),
             ...(metadata.lockfileHash === undefined ? {} : { lockfileHash: metadata.lockfileHash }),
@@ -252,7 +285,7 @@ export class Forkpoint {
           env: environment.env,
         });
       } else {
-        if (existing.status !== "recording" || existing.mode !== "replayed") {
+        if (existing.status !== "recording" || existing.mode !== storedMode) {
           throw new RunExistsError(runId);
         }
         cassette.updateRunEnvironment(runId, environment.env);
@@ -260,7 +293,7 @@ export class Forkpoint {
 
       cassette.appendEvent(runId, {
         type: "run.start",
-        payload: { name: effectiveName, mode: "replay", parentRunId: baseline.id },
+        payload: { name: effectiveName, mode: kind, parentRunId: baseline.id },
       });
       cassette.appendEvent(runId, {
         type: "env.snapshot",
@@ -278,13 +311,14 @@ export class Forkpoint {
         runId,
         baselineRunId: baseline.id,
         name: effectiveName,
-        mode: "replay",
+        mode: kind,
         cassette,
         occurrences: new Map(),
         counters: { llmCalls: 0, toolCalls: 0 },
+        ...(overrides === undefined ? {} : { forkOverrides: overrides }),
       };
 
-      const restoreFetch = installLiveGuard();
+      const restoreFetch = kind === "replay" ? installLiveGuard() : () => {};
       try {
         return await runWithContext(context, async () => {
           const restoreClock = installClockBoundary(context);
@@ -303,6 +337,35 @@ export class Forkpoint {
                 callsite: captureCallsite(),
               });
             }
+            if (kind === "fork") {
+              cassette.appendEvent(runId, {
+                type: "replay.warning",
+                payload: {
+                  code: "FORK_TOOLS_FROZEN",
+                  message:
+                    "Tool calls are answered from baseline fixtures; no tool executes during a fork.",
+                },
+              });
+              if (baselineOverrides !== undefined) {
+                cassette.appendEvent(runId, {
+                  type: "replay.warning",
+                  payload: {
+                    code: "FORK_OVERRIDES_INHERITED",
+                    message:
+                      "The baseline is a forked run; its overrides were inherited, with new overrides taking precedence.",
+                  },
+                });
+              }
+            } else if (overrides !== undefined) {
+              cassette.appendEvent(runId, {
+                type: "replay.warning",
+                payload: {
+                  code: "FORK_OVERRIDES_APPLIED",
+                  message:
+                    "The baseline is a forked run; its model overrides were applied to match the recorded requests.",
+                },
+              });
+            }
             const result = await fn();
             const durationMs = elapsedMs(startedAt);
             cassette.appendEvent(runId, {
@@ -311,7 +374,7 @@ export class Forkpoint {
               durationMs,
             });
             cassette.flush();
-            cassette.updateRunStatus(runId, "replayed", buildMetrics(cassette, runId, context, durationMs));
+            cassette.updateRunStatus(runId, storedMode, buildMetrics(cassette, runId, context, durationMs));
             return result;
           } catch (error) {
             const durationMs = elapsedMs(startedAt);
@@ -325,7 +388,7 @@ export class Forkpoint {
               cassette.flush();
               cassette.updateRunStatus(runId, "failed", buildMetrics(cassette, runId, context, durationMs));
             } catch {
-              // Preserve the error that failed the replay.
+              // Preserve the error that failed the run.
             }
             throw error;
           } finally {
@@ -365,6 +428,23 @@ function buildMetrics(
   };
 }
 
+function storedOverrides(run: RunRow): ForkOverrides | undefined {
+  if (run.mode !== "forked" || run.configJson === undefined) return undefined;
+
+  let config: unknown;
+  try {
+    config = JSON.parse(run.configJson) as unknown;
+  } catch {
+    throw new UsageError(`Run ${run.id} has unreadable fork config.`);
+  }
+  if (typeof config !== "object" || config === null) return undefined;
+
+  const raw = (config as Record<string, unknown>).overrides;
+  if (raw === undefined) return undefined;
+  const overrides = validateForkOverrides(raw);
+  return hasForkOverrides(overrides) ? overrides : undefined;
+}
+
 function environmentChanges(
   baselineEnvJson: string | undefined,
   current: Record<string, string>,
@@ -384,23 +464,6 @@ function environmentChanges(
     if (recorded[key] !== current[key]) changed.push(key);
   }
   return changed.sort();
-}
-
-function cassetteContext(
-  cassette: Cassette,
-  runId: string,
-  baselineRunId: string,
-  name: string,
-): RunContext {
-  return {
-    runId,
-    baselineRunId,
-    name,
-    mode: "replay",
-    cassette,
-    occurrences: new Map(),
-    counters: { llmCalls: 0, toolCalls: 0 },
-  };
 }
 
 function installLiveGuard(): () => void {

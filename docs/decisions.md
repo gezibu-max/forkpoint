@@ -237,3 +237,28 @@
 - 指纹仍作为配对后的比较内容，而不是配对键；请求变了也能指出“同一个调用点变了什么”。
 
 **代价**：分支改变导致 callsite 集合变化时，v0.1 只报最早未配对步骤，不做序列对齐（如 LCS）。并发未完成的调用按最近一个 pending step 归属；当前不支持并发 in-flight 调用。JSON 报告只含哈希与截断预览，不含完整请求体。
+
+---
+
+## ADR-015：fork 是 closed-world 反事实，工具 fixture 复制进 variant
+
+**背景**：fork 要让模型在新配置下重新决策；若工具也真实执行，副作用、网络与数据库状态会重新引入，且与 baseline 的工具结果不可比。另一方面，fork 的 LLM 请求因覆盖项而指纹全变，不能再用 baseline 的 LLM fixture 重放。
+
+**决策**：
+
+1. fork 中的 LLM 调用真实执行；工具调用只查 baseline fixture，绝不执行。
+2. 工具 fixture 按 `(kind, fixtureKey, occurrence)` 复制到 variant，使 forked run 能独立 replay / verify。
+3. 若模型改变路径，请求了 baseline 未记录的工具参数，显式抛 `FixtureMissError`，不猜测、不执行 fallback。
+4. fork 开始时写入一条 `FORK_TOOLS_FROZEN` 告警，说明工具世界被冻结。
+5. forked run 的 `config_json.overrides` 是运行的一部分；replay / verify 一个 forked run 时重新应用这些覆盖项，并写入 `FORK_OVERRIDES_APPLIED` 告警。
+6. 对一个 forked run 再 fork 时，继承其覆盖项，新的覆盖项优先；写入 `FORK_OVERRIDES_INHERITED` 告警。这样连续 fork 只改变新指定的变量。
+7. 覆盖项只允许 `model` / `temperature` / `systemPrompt`，至少一个；未知字段报用法错误。
+
+**理由**：
+
+- 保持“只让被改动的变量重新决策”：工具世界固定，分歧才能归因到模型或提示词。
+- fixture 复制让每个 variant 自包含，不依赖父 run 仍然存在。
+- 重放 forked run 时复用覆盖项，避免“variant 能 diff、不能 verify”的断层。
+- 显式 fixture miss 比静默执行工具更符合“不造假”。
+
+**代价**：fork 只适用于工具调用序列基本不变的变更；模型大幅改变工具参数会 fixture miss，这是 v0.1 的真实边界。system prompt 全文存进 `config_json`，本地存储可接受，但脱敏导出尚未实现。fork 不是 OS 沙箱。

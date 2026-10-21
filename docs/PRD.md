@@ -2,7 +2,7 @@
 
 - 版本：v0.2（求职作品集版）
 - 日期：2026-10-21
-- 状态：Pre-alpha，文档阶段，尚未有实现
+- 状态：Pre-alpha，已实现 record / strict replay / verify / fork / diff；流式、脱敏导出与成本估算未实现
 - 前身：AgentTape v0.1 草稿（2026-10-21）
 - 项目性质：单人、3 周、开源、求职作品集
 - 仓库：https://github.com/gezibu-max/forkpoint
@@ -224,17 +224,18 @@ strict 重放失败时，错误信息必须包含：
 ### FR-3 反事实 Fork（P0）
 
 - `forkpoint fork <run_id> --model <model> [--temperature <n>] [--system-prompt-file <path>]`。
+- 至少一个覆盖项；否则用法错误。
 - v0.1 覆盖是全局的：所有 LLM 步骤调用真实模型；工具使用基线 fixture（closed-world）。
-- variant run 记录 `parent_run_id` 与覆盖项。
+- variant run 记录 `parent_run_id` 与覆盖项；重放该 forked run 时自动复用存储的覆盖项，对 forked run 再 fork 时继承覆盖项且新覆盖项优先。
 - 对齐使用 callsite label，不使用 `step_index`。
-- 写工具在 fork 中不真实执行，并产生告警事件。
+- 工具在 fork 中不真实执行；fork 开始时写入一条 `FORK_TOOLS_FROZEN` 告警。
 
 **验收**：同一基线 fork 新模型后，报告给出结论变化与首次分歧事件；未覆盖的工具调用不产生真实副作用。
 
 ### FR-4 Diff 与定位（P0）
 
 - `forkpoint diff <base> <variant>`：比较两条 run。
-- 指标：最终输出差异、首次分歧事件、分歧类型、步数、LLM 调用次数、token、估算成本、延迟。
+- 指标：最终输出差异、首次分歧事件、分歧类型、步数、LLM 调用次数、token、延迟；v0.1 不做成本估算。
 - 分歧类型：`fixture_miss`、`request_mismatch`、`tool_exception`、`output_changed`、`nondeterminism_leak`。
 - 输出 Markdown；P1 输出 JSON 供 CI 断言。
 - **不把“模型正常换答案”误报为 `nondeterminism_leak`。**

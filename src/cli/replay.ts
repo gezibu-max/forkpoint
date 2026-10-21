@@ -107,7 +107,7 @@ export async function replayCommand(options: ReplayCommandOptions): Promise<numb
   return result.status === "replayed" ? 0 : 1;
 }
 
-function readBaseline(store: string, runId: string): RunRow {
+export function readBaseline(store: string, runId: string): RunRow {
   const cassette = openExistingCassette(store);
   if (cassette === undefined) throw new RunNotFoundError(runId, store);
   try {
@@ -134,9 +134,10 @@ function readBaselineModel(store: string, runId: string): string | undefined {
   }
 }
 
-function resolveCommand(
+export function resolveCommand(
   baseline: RunRow,
   override: string[],
+  commandName = "replay",
 ): { command: string; args: string[] } {
   if (override.length > 0) {
     return { command: override[0]!, args: override.slice(1) };
@@ -148,7 +149,7 @@ function resolveCommand(
   }
 
   throw new UsageError(
-    `Run ${baseline.id} has no recorded command; pass it after --: forkpoint replay ${baseline.id} -- <command...>`,
+    `Run ${baseline.id} has no recorded command; pass it after --: forkpoint ${commandName} ${baseline.id} -- <command...>`,
   );
 }
 

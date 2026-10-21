@@ -3,12 +3,12 @@ import { captureCallsite } from "../core/callsite.js";
 import {
   errorSummary,
   NoActiveRunError,
-  NotImplementedError,
   UnsupportedStreamMethodError,
 } from "../core/errors.js";
 import { canonicalize, fingerprintValue } from "../core/fingerprint.js";
 import { toJsonText } from "../core/serialize.js";
 import { currentRun, isArmed, nextOccurrence, type RunContext } from "./context.js";
+import { applyForkOverrides } from "./overrides.js";
 import {
   cloneJson,
   fixtureResponse,
@@ -117,10 +117,6 @@ async function handleLlmCall(
     return original.apply(owner, args);
   }
 
-  if (context.mode === "fork") {
-    throw new NotImplementedError("LLM fork");
-  }
-
   if (!isObject(rawRequest)) {
     throw new Error(`${api}.create expects a request object.`);
   }
@@ -130,7 +126,12 @@ async function handleLlmCall(
     throw new UnsupportedStreamMethodError(`${api}.create with stream: true`, { callsite });
   }
 
-  const request = sanitizeRequest(rawRequest);
+  const effectiveRequest =
+    context.forkOverrides !== undefined
+      ? applyForkOverrides(api, rawRequest, context.forkOverrides)
+      : rawRequest;
+  const callArgs = effectiveRequest === rawRequest ? args : [effectiveRequest, ...args.slice(1)];
+  const request = sanitizeRequest(effectiveRequest);
   const requestHash = fingerprintValue(buildFingerprintInput(api, request));
   const requestJson = canonicalize(request);
   const occurrence = nextOccurrence(context, "llm", requestHash);
@@ -152,7 +153,7 @@ async function handleLlmCall(
   const startedAt = monotonicNow();
   let response: unknown;
   try {
-    response = await original.apply(owner, args);
+    response = await original.apply(owner, callArgs);
   } catch (error) {
     const summary = errorSummary(error);
     const aborted = isAborted(error, rawRequest);

@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Mode } from "../core/events.js";
 import { NoActiveRunError } from "../core/errors.js";
 import type { Cassette } from "../store/cassette.js";
+import type { ForkOverrides } from "./overrides.js";
 
 export interface RunCounters {
   llmCalls: number;
@@ -16,6 +17,7 @@ export interface RunContext {
   cassette: Cassette;
   occurrences: Map<string, number>;
   counters: RunCounters;
+  forkOverrides?: ForkOverrides;
 }
 
 export function fixtureRunId(context: RunContext): string {

@@ -12,16 +12,16 @@ interface ClockPoint {
 }
 
 export function installClockBoundary(context: RunContext): () => void {
-  const replay = context.mode === "replay";
-  const recorded = replay ? loadRecordedClock(context) : [];
-  const fallback = replay ? recorded[0]?.value ?? baselineStart(context) : 0;
+  const controlled = context.baselineRunId !== undefined;
+  const recorded = controlled ? loadRecordedClock(context) : [];
+  const fallback = controlled ? recorded[0]?.value ?? baselineStart(context) : 0;
   let index = 0;
   let reads = 0;
   let last = fallback;
   let warned = false;
 
   function read(source: string): number {
-    if (!replay) {
+    if (!controlled) {
       reads += 1;
       if (reads > MAX_CLOCK_READS) throw new ClockReadLimitError(MAX_CLOCK_READS);
       const value = source === "performance" ? realPerformanceNow() : realNow();
@@ -38,7 +38,7 @@ export function installClockBoundary(context: RunContext): () => void {
           recorded.length === 0 ? "CLOCK_NOT_RECORDED" : "CLOCK_EXHAUSTED",
           recorded.length === 0
             ? `No clock reads were recorded; freezing at ${new Date(last).toISOString()}.`
-            : "Replayed more clock reads than were recorded; freezing at the last value.",
+            : "Consumed more clock reads than were recorded; freezing at the last value.",
         );
       }
       return last;

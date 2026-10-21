@@ -1,6 +1,6 @@
 import { elapsedMs, monotonicNow } from "../core/clock.js";
 import { captureCallsite } from "../core/callsite.js";
-import { CassetteCorruptError, errorSummary, NoActiveRunError, NotImplementedError } from "../core/errors.js";
+import { CassetteCorruptError, errorSummary, NoActiveRunError } from "../core/errors.js";
 import { canonicalize, fingerprintValue } from "../core/fingerprint.js";
 import { currentRun, isArmed, nextOccurrence, type RunContext } from "./context.js";
 import {
@@ -34,10 +34,6 @@ export function tool<Args extends unknown[], Result>(
       return fn.apply(this, args);
     }
 
-    if (context.mode === "fork") {
-      throw new NotImplementedError(`Fork for tool "${name}"`);
-    }
-
     const callsite = captureCallsite({ label: options.label });
     const toolArgs = args.length === 1 ? args[0] : args;
     const requestHash = fingerprintValue({ tool: name, args: toolArgs });
@@ -52,8 +48,16 @@ export function tool<Args extends unknown[], Result>(
       requestHash,
     });
 
-    if (context.mode === "replay") {
-      return replayToolCall(context, name, isWrite, requestHash, occurrence, callsite) as Result;
+    if (context.mode === "replay" || context.mode === "fork") {
+      return replayToolCall(
+        context,
+        name,
+        isWrite,
+        requestHash,
+        occurrence,
+        callsite,
+        requestJson,
+      ) as Result;
     }
 
     const startedAt = monotonicNow();
@@ -91,10 +95,12 @@ function replayToolCall(
   requestHash: string,
   occurrence: number,
   callsite: string,
+  requestJson: string,
 ): unknown {
   const fixture = getReplayFixture(context, "tool", requestHash, occurrence, callsite);
   const meta = isObject(fixture.meta) ? fixture.meta : {};
   const thenable = meta.thenable === true;
+  const fork = context.mode === "fork";
 
   const recorded = recordedError(meta);
   if (recorded !== undefined) {
@@ -103,6 +109,7 @@ function replayToolCall(
       payload: { name, errorName: recorded.name, message: recorded.message },
       callsite,
     });
+    if (fork) copyToolFixture(context, fixture, requestJson, callsite);
     return replayFailure(recorded, thenable);
   }
 
@@ -115,7 +122,7 @@ function replayToolCall(
   }
 
   const result = cloneJson(response.result);
-  if (isWrite) {
+  if (isWrite && !fork) {
     appendReplayWarning(
       context,
       "WRITE_TOOL_NOT_EXECUTED",
@@ -130,7 +137,25 @@ function replayToolCall(
     callsite,
     responseHash: fingerprintValue(result),
   });
+  if (fork) copyToolFixture(context, fixture, requestJson, callsite);
   return replayResult(result, thenable);
+}
+
+function copyToolFixture(
+  context: RunContext,
+  fixture: ReturnType<typeof getReplayFixture>,
+  requestJson: string,
+  callsite: string,
+): void {
+  context.cassette.putFixture(context.runId, {
+    kind: "tool",
+    fixtureKey: fixture.fixtureKey,
+    occurrence: fixture.occurrence,
+    callsite,
+    requestJson,
+    ...(fixture.response === undefined ? {} : { response: fixture.response }),
+    ...(fixture.meta === undefined ? {} : { meta: fixture.meta }),
+  });
 }
 
 function recordToolResult(

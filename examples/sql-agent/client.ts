@@ -78,6 +78,8 @@ ORDER BY total DESC
 LIMIT 10
 `.trim();
 
+const DEMO_PLAN = process.env.FORKPOINT_DEMO_PLAN ?? "baseline";
+
 class ScriptedClient implements ChatClient {
   private step = 0;
   private nextCallId = 1;
@@ -107,7 +109,7 @@ class ScriptedClient implements ChatClient {
       case 3:
         return completion(request, [this.toolCall("run_sql", { sql: WRONG_WINDOW_SQL })]);
       default:
-        return completion(request, undefined, summarize(request, this.step));
+        return completion(request, undefined, summarize(request, this.step, DEMO_PLAN));
     }
   }
 
@@ -151,7 +153,7 @@ function completion(
   };
 }
 
-function summarize(request: Record<string, unknown>, step: number): string {
+function summarize(request: Record<string, unknown>, step: number, plan: string): string {
   const messages = Array.isArray(request.messages) ? (request.messages as Message[]) : [];
   const lastTool = [...messages].reverse().find((message) => message.role === "tool");
   if (lastTool?.content === undefined || lastTool.content === null) {
@@ -164,7 +166,11 @@ function summarize(request: Record<string, unknown>, step: number): string {
     const lines = rows.slice(0, 10).map((row, index) => {
       return `${index + 1}. ${String(row.customer_name)} — ¥${String(row.total)}`;
     });
-    return `上个月销售额最高的 10 个客户：\n${lines.join("\n")}\n\n（step ${step}，scripted run）`;
+    const note =
+      plan === "alt-final"
+        ? "\n\n（fork demo：工具结果与基线完全相同，最终答复由另一个模型/提示词生成。）"
+        : "";
+    return `上个月销售额最高的 10 个客户：\n${lines.join("\n")}${note}\n\n（step ${step}，scripted run）`;
   } catch {
     return "查询完成，但无法解析工具结果。";
   }

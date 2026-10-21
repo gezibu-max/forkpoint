@@ -30,6 +30,12 @@ import {
   parseDiffArguments,
   toDiffOptions,
 } from "./diff.js";
+import {
+  forkCommand,
+  forkHelp,
+  parseForkArguments,
+  toForkOptions,
+} from "./fork.js";
 
 interface CommonOptions {
   store?: string;
@@ -52,6 +58,8 @@ if (argv[0] === "record") {
   await runVerify(argv.slice(1));
 } else if (argv[0] === "diff") {
   await runDiff(argv.slice(1));
+} else if (argv[0] === "fork") {
+  await runFork(argv.slice(1));
 } else if (argv.length === 0) {
   buildProgram().outputHelp();
 } else {
@@ -122,6 +130,21 @@ async function runDiff(args: string[]): Promise<void> {
   }
 }
 
+async function runFork(args: string[]): Promise<void> {
+  const wantsJson = args.includes("--json");
+  try {
+    const parsed = parseForkArguments(args);
+    if (parsed === "help") {
+      process.stdout.write(`${forkHelp()}\n`);
+      process.exitCode = 0;
+      return;
+    }
+    process.exitCode = await forkCommand(toForkOptions(parsed));
+  } catch (error) {
+    process.exitCode = printError(error, { json: wantsJson, debug: args.includes("--debug") });
+  }
+}
+
 function buildProgram(): Command {
   const program = new Command();
   program
@@ -176,6 +199,16 @@ function buildProgram(): Command {
     .action(() => {
       throw new UsageError(
         "diff must be the first argument: forkpoint diff <base> <variant>",
+      );
+    });
+
+  program
+    .command("fork")
+    .description("Re-run a recorded run against live models with frozen tools")
+    .allowUnknownOption(true)
+    .action(() => {
+      throw new UsageError(
+        "fork must be the first argument: forkpoint fork <run_id> --model <name> [-- <command...>]",
       );
     });
 

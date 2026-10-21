@@ -13,7 +13,7 @@ export interface SpawnSpec {
   command: string;
   args: string[];
   store: string;
-  mode: "record" | "replay";
+  mode: "record" | "replay" | "fork";
   runId: string;
   commandText: string;
   baselineRunId?: string;
@@ -59,7 +59,7 @@ export interface FinalizeOptions {
   runId: string;
   store: string;
   outcome: ChildOutcome;
-  finalStatus: "recorded" | "replayed";
+  finalStatus: "recorded" | "replayed" | "forked";
   json: boolean;
   debug: boolean;
   missingStartMessage: string;

@@ -346,8 +346,11 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 - **处理**：
   - v0.1 覆盖是**全局**的：所有 LLM 调用使用新 model / temperature；system prompt 替换规则为——移除所有 `system` 消息，在最前面插入一条新的 `system` 消息。
   - 被覆盖的 LLM 步骤真实调用模型；响应写入 variant cassette。
-  - 工具调用一律使用基线 fixture，不执行（closed-world）。
+  - 工具调用一律使用基线 fixture，不执行（closed-world）；结果 fixture 复制到 variant，使 variant 可独立重放。
+  - fork 开始时写入一条 `FORK_TOOLS_FROZEN` 告警，说明工具世界被冻结。
   - variant Run 记录 `parent_run_id`、`mode=forked`、`config_json.overrides`。
+  - 对 forked Run 执行 replay / verify 时，自动复用其存储的覆盖项，并在 variant 写入 `FORK_OVERRIDES_APPLIED` 告警。
+  - 对一个 forked Run 再 fork 时继承其覆盖项，新覆盖项优先，并写入 `FORK_OVERRIDES_INHERITED` 告警。
   - 不覆盖工具 schema；`--toolset-version` 不在 v0.1。
 - **输出**：新的 `run_id`。
 - **异常**：基线不存在、模型不可用、网络失败 → 非零退出，保留已写入事件。

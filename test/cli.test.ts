@@ -32,13 +32,13 @@ function cleanEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function run(store: string, args: string[]) {
+function run(store: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync(
     process.execPath,
     ["--import", "tsx", "src/cli/index.ts", ...args, "--store", store],
     {
       cwd: repoRoot,
-      env: cleanEnv(),
+      env: { ...cleanEnv(), ...extraEnv },
       encoding: "utf8",
       timeout: 60_000,
     },
@@ -238,6 +238,72 @@ describe("CLI integration", () => {
     } finally {
       cassette.close();
     }
+  });
+
+  it("forks a recorded run with live scripted model calls and frozen tools", () => {
+    const store = makeStore();
+    const record = recordDemo(store, "cli-fork");
+    expect(record.status, record.stderr).toBe(0);
+    const runId = recordedRunId(record.stdout);
+
+    const fork = run(
+      store,
+      ["fork", runId, "--model", "scripted-alt", "--name", "cli-fork-alt", "--json"],
+      { FORKPOINT_DEMO_PLAN: "alt-final" },
+    );
+    expect(fork.status, fork.stderr).toBe(0);
+    const result = trailingJson(fork.stdout) as {
+      ok: boolean;
+      runId: string;
+      baselineRunId: string;
+      status: string;
+    };
+    expect(result.ok).toBe(true);
+    expect(result.baselineRunId).toBe(runId);
+    expect(result.status).toBe("forked");
+
+    const cassette = openCassette(store);
+    try {
+      const variant = cassette.getRun(result.runId);
+      expect(variant?.mode).toBe("forked");
+      expect(variant?.status).toBe("forked");
+      expect(variant?.name).toBe("cli-fork-alt");
+      expect(variant?.parentRunId).toBe(runId);
+      expect(cassette.countFixtures(result.runId)).toBe(cassette.countFixtures(runId));
+      expect(cassette.getEventsByType(result.runId, "tool.result")).toHaveLength(
+        cassette.getEventsByType(runId, "tool.result").length,
+      );
+
+      const start = cassette.getEventsByType(result.runId, "run.start")[0]!;
+      expect((start.payload as { mode: string }).mode).toBe("fork");
+      const warnings = cassette
+        .getEventsByType(result.runId, "replay.warning")
+        .map((event) => (event.payload as { code: string }).code);
+      expect(warnings).toContain("FORK_TOOLS_FROZEN");
+
+      const config = JSON.parse(variant?.configJson ?? "{}") as {
+        overrides?: { model?: string };
+      };
+      expect(config.overrides).toEqual({ model: "scripted-alt" });
+    } finally {
+      cassette.close();
+    }
+
+    const replay = run(store, ["replay", result.runId, "--json"]);
+    expect(replay.status, replay.stderr).toBe(0);
+    const replayed = trailingJson(replay.stdout) as { status: string; baselineRunId: string };
+    expect(replayed.status).toBe("replayed");
+    expect(replayed.baselineRunId).toBe(result.runId);
+
+    const diff = run(store, ["diff", runId, result.runId, "--format", "json"]);
+    expect(diff.status, diff.stderr).toBe(0);
+    const report = JSON.parse(diff.stdout) as {
+      firstDivergence: { status: string; severity: string } | null;
+      finalOutput: { base: string; variant: string } | null;
+    };
+    expect(report.firstDivergence?.severity).toBe("expected");
+    expect(report.finalOutput).not.toBeNull();
+    expect(report.finalOutput?.variant).toContain("fork demo");
   });
 
   it("marks a command that never starts fp.run as failed", () => {
