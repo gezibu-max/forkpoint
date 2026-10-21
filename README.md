@@ -4,7 +4,7 @@
 
 **Forkpoint 是 Agent 的可复现运行层。** 录制一次真实运行，离线严格重放；换模型、改 prompt、改 tool schema 后，指出第一次分歧发生在哪一步。
 
-**状态：pre-alpha，当前只有文档，尚无可运行代码。** 实现从 2026-10-21 开始，目标 D14 可演示。
+**状态：pre-alpha，D1–D3 已完成。** 已能录制一次完整的 Text2SQL agent 运行，并用 `ls` / `show` 检查 cassette；strict replay、fork、diff 尚未实现。
 
 ---
 
@@ -22,12 +22,12 @@ Agent 的行为由 LLM 采样、工具返回和运行时状态共同决定。任
 record  →  strict replay  →  fork  →  diff
 ```
 
-| 阶段 | 行为 |
-|---|---|
-| Record | 包装 OpenAI 客户端与工具，录制 LLM / tool / clock / RNG / env 边界 |
-| Replay | 不调用模型、不联网，按请求指纹回放，输出与录制时一致 |
-| Fork | 替换模型 / 温度 / system prompt，工具世界冻结，LLM 步骤重新决策 |
-| Diff | 输出首次分歧的 `seq`、`callsite`、类型，以及 token / 成本 / 延迟对比 |
+| 阶段 | 行为 | 状态 |
+|---|---|---|
+| Record | 包装 OpenAI 客户端与工具，录制 LLM / tool / env 边界 | 已实现（非流式） |
+| Replay | 不调用模型、不联网，按请求指纹回放，输出与录制时一致 | 未实现 |
+| Fork | 替换模型 / 温度 / system prompt，工具世界冻结，LLM 步骤重新决策 | 未实现 |
+| Diff | 输出首次分歧的 `seq`、`callsite`、类型，以及 token / 成本 / 延迟对比 | 未实现 |
 
 **关键点：它不重放模型，重放事实。** 录制时模型的输出已经发生；重放时不采样，只回放。fork 时才调用新模型，而且只让被改动的变量重新决策。
 
@@ -52,7 +52,7 @@ record  →  strict replay  →  fork  →  diff
 
 Forkpoint 只押两点：**时钟 / RNG / env 在重放时受控，而不只是被记录**；**自动 callsite + 首次分歧定位**。框架无关的 time-travel、Claude Code session 录制、断言 DSL 都不做。
 
-## 规划的 API（尚未实现）
+## 已实现的 API（录制）
 
 ```ts
 import OpenAI from "openai";
@@ -71,11 +71,29 @@ await fp.run("sql-agent-fail", async () =>
 ```
 
 ```bash
-npx forkpoint record --name sql-agent-fail -- tsx examples/sql-agent.ts
+# 已实现
+npx forkpoint record --name sql-agent-fail -- tsx examples/sql-agent/index.ts
+npx forkpoint ls
+npx forkpoint show <run_id> --events
+
+# 规划中
 npx forkpoint replay <run_id> --strict
 npx forkpoint fork <run_id> --model gpt-4.1-mini --system-prompt-file prompts/v2.md
 npx forkpoint diff <base> <variant> -o reports/model-swap.md
 ```
+
+### 跑一遍 demo
+
+```bash
+npm install
+npm run record:demo
+npx tsx src/cli/index.ts ls
+npx tsx src/cli/index.ts show <run_id> --events
+```
+
+未设置 `OPENAI_API_KEY` 时，demo 使用脚本化的离线客户端，并在输出中明确标注 `scripted run`；设置后走真实 OpenAI 调用。两种模式都会录制到同一个 cassette schema。
+
+当前不支持：流式响应、clock / RNG 控制、脱敏后的 replay、fork、diff。
 
 ## 文档
 
@@ -87,8 +105,8 @@ npx forkpoint diff <base> <variant> -o reports/model-swap.md
 
 | 时间 | 交付 |
 |---|---|
-| D1–D3 | 骨架、schema、canonical fingerprint、真实 Text2SQL demo |
-| D4–D7 | 录制：LLM / tool / clock / RNG / env、脱敏 |
+| D1–D3 | 骨架、schema、canonical fingerprint、Text2SQL demo、record CLI（已完成） |
+| D4–D7 | 录制：clock / RNG、流式 LLM、脱敏（LLM / tool / env 已录制） |
 | D8–D10 | strict replay、guard、verify；止损检查 |
 | D11–D14 | fork、diff、mutation benchmark、README / decisions / limits / prior-art |
 | D15–D21 | 博客、视频、GitHub Action、v0.1.0 |

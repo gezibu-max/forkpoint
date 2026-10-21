@@ -86,7 +86,7 @@
 
 - 手工补 fixture 会产出“半真半假”的 cassette，破坏“严格重放”这个唯一卖点。
 - merge 把两个世界的因果拼在一起，无法回答“这次运行到底发生了什么”。
-- 正确的恢复动作是：报清楚缺什么、给最近邻、重录，或用 `--allow-live` 探索新路径。
+- 正确的恢复动作是：报清楚缺什么、给最近邻、重录；hybrid 模式（P1）才允许 `--allow-live` 探索新路径。
 
 **代价**：失败恢复不如“自动修复”顺手；用清晰的错误信息弥补（FR-013）。
 
@@ -139,3 +139,33 @@
 - fork 只让被改动的变量重新决策，才能做反事实对比。
 
 **代价**：strict replay 不能测试“模型本身是否稳定”；那是 fork 和 benchmark 的事。报告中明确区分。
+
+---
+
+## ADR-009：occurrence 按 `(kind, requestHash)` 计数，不按 callsite
+
+**背景**：同一段代码可能循环发出完全相同的请求。重放要按序命中第 0、1、2 个响应，不能只按指纹取第一个。
+
+**决策**：录制和重放都用 `(kind, requestHash)` 的同步计数器分配 `occurrence`，fixture 主键为 `(run_id, kind, fixture_key, occurrence)`。
+
+**理由**：
+
+- 请求未变时，重放必须逐次命中同一响应，occurrence 是精确匹配的一部分。
+- callsite 在请求变化后会漂移，不能用来定位“第几次调用”。
+
+**代价**：fork 时若请求指纹改变，occurrence 会从 0 重新计数，无法直接与基线配对。D11 需要额外的 per-callsite ordinal 做对齐；在那之前，fork 报告只能按事件顺序对齐，不能宣称稳定。
+
+---
+
+## ADR-010：v0.1 显式拒绝流式请求
+
+**背景**：OpenAI SDK 的 `stream: true` 返回异步迭代器，重放需要在 chunk 级别保存与校验，且中途取消、部分消费都会影响后续行为。
+
+**决策**：录制阶段遇到 `stream: true` 直接抛 `UnsupportedStreamMethodError`，不静默降级为非流式，也不记录半个流。
+
+**理由**：
+
+- 显式失败符合“宁可失败，不造假”。
+- 半个流无法重放，静默降级会让用户以为录制成功。
+
+**代价**：v0.1 不支持流式 Agent；D4–D7 再实现 `llm.chunk` 与 `stream.aborted`。
