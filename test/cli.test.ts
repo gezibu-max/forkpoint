@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { openCassette } from "../src/store/cassette.js";
+import { cassettePath } from "../src/store/db.js";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const stores: string[] = [];
@@ -304,6 +305,64 @@ describe("CLI integration", () => {
     expect(report.firstDivergence?.severity).toBe("expected");
     expect(report.finalOutput).not.toBeNull();
     expect(report.finalOutput?.variant).toContain("fork demo");
+  });
+
+  it("exports a redacted JSONL file and refuses raw export", () => {
+    const store = makeStore();
+    const record = recordDemo(store, "cli-export");
+    expect(record.status, record.stderr).toBe(0);
+    const runId = recordedRunId(record.stdout);
+
+    const cassette = openCassette(store);
+    let eventCount: number;
+    let fixtureCount: number;
+    try {
+      eventCount = cassette.countEvents(runId);
+      fixtureCount = cassette.countFixtures(runId);
+    } finally {
+      cassette.close();
+    }
+
+    const target = path.join(store, "exports", "run.jsonl");
+    const exported = run(store, ["export", runId, "--redact", "-o", target, "--json"]);
+    expect(exported.status, exported.stderr).toBe(0);
+    const summary = JSON.parse(exported.stdout) as {
+      ok: boolean;
+      runId: string;
+      redacted: boolean;
+      replayable: boolean;
+      events: number;
+      fixtures: number;
+      findings: unknown[];
+    };
+    expect(summary).toMatchObject({
+      ok: true,
+      runId,
+      redacted: true,
+      replayable: false,
+      events: eventCount,
+      fixtures: fixtureCount,
+      findings: [],
+    });
+
+    const lines = readFileSync(target, "utf8").trimEnd().split("\n");
+    expect(lines).toHaveLength(1 + eventCount + fixtureCount);
+    const meta = JSON.parse(lines[0]!) as { kind: string; redacted: boolean; replayable: boolean };
+    expect(meta).toMatchObject({ kind: "meta", redacted: true, replayable: false });
+
+    const noRedact = run(store, ["export", runId]);
+    expect(noRedact.status).toBe(2);
+    expect(noRedact.stderr).toContain("--redact");
+
+    const overwrite = run(store, [
+      "export",
+      runId,
+      "--redact",
+      "-o",
+      cassettePath(store),
+    ]);
+    expect(overwrite.status).toBe(2);
+    expect(overwrite.stderr).toContain("Refusing to overwrite the cassette");
   });
 
   it("marks a command that never starts fp.run as failed", () => {

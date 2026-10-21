@@ -2,7 +2,7 @@
 
 - 版本：v0.2（求职作品集版）
 - 日期：2026-10-21
-- 状态：Pre-alpha，已实现 record / strict replay / verify / fork / diff；流式、脱敏导出与成本估算未实现
+- 状态：Pre-alpha，已实现 record / strict replay / verify / fork / diff / export；流式与成本估算未实现
 - 前身：AgentTape v0.1 草稿（2026-10-21）
 - 项目性质：单人、3 周、开源、求职作品集
 - 仓库：https://github.com/gezibu-max/forkpoint
@@ -259,12 +259,13 @@ forkpoint export <run_id> --redact
 
 ### FR-6 脱敏与隐私（P0）
 
-- 默认脱敏 Authorization、api-key、Cookie 等 header。
-- 支持自定义正则规则与 env 白名单。
-- cassette 存本地 `.forkpoint/`，内置 `.gitignore`；无遥测。
-- `export --redact` 生成可分享版本，并扫描 `sk-`、`ghp_`、`AKIA` 等模式给出告警。
+- 录制时不写入 LLM 传输字段（headers、fetch 等）；env 只录白名单，并跳过 `*_KEY` / `*_TOKEN` / `*_SECRET` / `*_PASSWORD`。默认 header 脱敏由此成立。
+- 支持自定义正则规则与 env 白名单。自定义规则随 run 持久化，variant run 继承 baseline 规则。
+- cassette 存本地 `.forkpoint/`；无遥测。cassette 仍可能含业务数据，分享必须走 `export --redact`。
+- `export --redact` 强制要求 `--redact`；对 meta / event / fixture 应用内置 header、env 与自定义规则，输出 JSONL，再扫描 `sk-`、`ghp_`、`AKIA` 等模式给出告警。命中只报告，不自动删除。
+- 导出文件标注 `replayable: false`；脱敏改变了请求内容，不提供导入与重放。
 
-**验收**：设置假 API key 录制后，全库 grep 不到该值；导出文件同样干净。
+**验收**：设置假 API key 录制后，全库 grep 不到该值；导出文件同样干净；故意植入的 `sk-test-...` 能被扫描报告定位到行号与字段。
 
 ### FR-7 CI 集成（P1）
 
@@ -560,11 +561,13 @@ CREATE INDEX idx_fixtures_lookup ON fixtures(run_id, kind, fixture_key);
 
 ### 7.13 脱敏
 
-- 默认 header：`Authorization`、`api-key`、`x-api-key`、`Cookie`、`Set-Cookie`。
-- env 白名单：`NODE_ENV`、`PATH`、`SHELL` 等；默认不录 `*_KEY`、`*_TOKEN`、`*_SECRET`。
-- 自定义规则：`{ name, pattern, replacement }`。
-- `export --redact` 先应用规则，再扫描 `sk-`、`ghp_`、`AKIA`、`xox[baprs]-` 等模式；命中则列出位置，不自动删除。
-- 文档明确：cassette 可能含业务数据，分享前必须人工检查。
+- 默认 header：`Authorization`、`api-key`、`x-api-key`、`Cookie`、`Set-Cookie`；录制阶段不写入 headers，导出阶段再按 key 兜底替换。
+- env 白名单：`NODE_ENV`、`PATH`、`SHELL` 等；默认不录 `*_KEY`、`*_TOKEN`、`*_SECRET`、`*_PASSWORD`。
+- 自定义规则：`{ name, pattern, replacement }`；规则随 run 保存为 `{ name, source, flags, replacement }`，replay / fork 的 variant 继承 baseline 规则。
+- 自定义规则在导出时应用，不在录制时改写请求；否则请求指纹变化会破坏 replay / fork 的 fixture 匹配。
+- `export --redact` 先应用内置与自定义规则，再扫描 `sk-`、`ghp_`、`AKIA`、`xox[baprs]-` 等模式；命中则列出 JSONL 行号与字段，不自动删除。
+- 导出文件标注 `replayable: false`，不提供导入。
+- 文档明确：cassette 可能含业务数据，分享前必须人工检查；扫描是安全网，不是 DLP 保证。
 
 ### 7.14 分发
 

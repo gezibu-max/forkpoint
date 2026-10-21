@@ -420,17 +420,18 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 
 - **优先级**：P0
 - **描述**：保证 cassette 可安全分享。
-- **输入**：`forkpoint export <run_id> --redact [-o <file>]`；自定义规则。
+- **输入**：`forkpoint export <run_id> --redact [-o <file>]`；自定义规则来自 SDK 的 `redact` 选项。
 - **处理**：
-  - 默认 header：`Authorization`、`api-key`、`x-api-key`、`Cookie`、`Set-Cookie`。
-  - 默认敏感 env：`*_KEY`、`*_TOKEN`、`*_SECRET`、`*_PASSWORD`。
-  - 自定义规则：`{ name, pattern, replacement }`，按顺序应用。
-  - 导出 JSONL：首行 meta，随后每行一个 event，再每行一个 fixture。
-  - 导出后扫描 `sk-`、`ghp_`、`AKIA`、`xox[baprs]-` 等模式；命中列出行号与字段，不自动删除。
+  - `--redact` 为强制项；不提供原始导出入口。没有 `-o` 时 JSONL 写 stdout，摘要写 stderr。
+  - 默认 header：`Authorization`、`api-key`、`x-api-key`、`Cookie`、`Set-Cookie`，在导出对象中按 key 替换为 `[REDACTED]`。
+  - 默认敏感 env：仅在 env 快照与 `run.env` 中，`*_KEY`、`*_TOKEN`、`*_SECRET`、`*_PASSWORD` 的值替换为 `[REDACTED]`。
+  - 自定义规则：`{ name, pattern, replacement }`，按顺序应用；规则在录制时序列化进 `config_json.redactionPatterns`，replay / fork 的 variant 在自身未提供规则时继承 baseline 规则。规则只应用于导出，不改变录制 payload 与请求指纹。
+  - 导出 JSONL：首行 meta（`formatVersion=1`、`redacted=true`、`replayable=false`），随后每行一个 event，再每行一个 fixture；fixture 的 `requestJson` 解析为 `request` 对象。
+  - 导出后扫描 `sk-`、`ghp_`、`AKIA`、`xox[baprs]-` 等模式；命中列出 JSONL 行号、记录类型、seq / fixture key 与字段路径，不自动删除，也不把导出判为失败。
   - 不做“猜测性”替换；只替换已知规则。
-- **输出**：脱敏文件 + 扫描报告。
-- **异常**：规则非法 → 退出码 2。
-- **验收**：A5 通过；导出文件 grep 不到假 key；扫描能发现故意植入的 `sk-test-...`。
+- **输出**：脱敏文件 + 扫描报告；`--json` 输出机器可读摘要（需要 `-o`）。
+- **异常**：缺少 `--redact`、规则非法、`--json` 未给 `-o`、run 仍在录制 → 退出码 2。
+- **验收**：A5 通过；导出文件 grep 不到假 key；扫描能发现故意植入的 `sk-test-...` 并给出行号与字段。
 
 ### FR-021 CLI
 

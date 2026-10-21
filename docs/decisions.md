@@ -261,4 +261,31 @@
 - 重放 forked run 时复用覆盖项，避免“variant 能 diff、不能 verify”的断层。
 - 显式 fixture miss 比静默执行工具更符合“不造假”。
 
-**代价**：fork 只适用于工具调用序列基本不变的变更；模型大幅改变工具参数会 fixture miss，这是 v0.1 的真实边界。system prompt 全文存进 `config_json`，本地存储可接受，但脱敏导出尚未实现。fork 不是 OS 沙箱。
+**代价**：fork 只适用于工具调用序列基本不变的变更；模型大幅改变工具参数会 fixture miss，这是 v0.1 的真实边界。system prompt 全文存进 `config_json`，本地存储可接受；分享时使用 `export --redact`（见 ADR-016）。fork 不是 OS 沙箱。
+
+---
+
+## ADR-016：脱敏在导出时执行，导出文件不可重放
+
+**背景**：自定义脱敏规则是 JS `RegExp`，用户希望录制一次后、分享时再决定如何脱敏。但如果在录制时改写 LLM 请求或 tool 结果，请求指纹会变化，replay / fork 必须同时应用同样的规则才能命中 fixture；fork 时真实模型也需要看到原始输入。另一方面，直接分发 cassette 可能带出业务数据与密钥。
+
+**决策**：
+
+1. **录制保留原始边界数据**：LLM 请求中不写入 `headers` / `fetch` 等传输字段，env 只录白名单且跳过敏感后缀；这两项在录制阶段完成。自定义规则不在录制时改写 payload。
+2. **规则随 run 持久化**：`new Forkpoint({ redact })` 的规则序列化为 `{ name, source, flags, replacement }` 写入 `config_json.redactionPatterns`。replay / fork 创建的 variant 在自身未提供规则时继承 baseline 的规则。
+3. **`export` 时才应用规则**：`forkpoint export <run_id> --redact` 对 meta、event payload、fixture request / response / meta 的字符串叶子依次应用规则（无 `g` 也按全局替换），并执行内置规则：
+   - 任意对象中 key 为 `Authorization`、`api-key`、`x-api-key`、`Cookie`、`Set-Cookie` 的值替换为 `[REDACTED]`；
+   - 仅在 env 快照与 `run.env` 中，key 以 `_KEY` / `_TOKEN` / `_SECRET` / `_PASSWORD` 结尾的值替换为 `[REDACTED]`。
+4. **`--redact` 是强制的**：不提供原始导出入口，避免“先导出再忘记脱敏”。
+5. **导出结构**：JSONL 首行为 meta（`formatVersion=1`、`redacted=true`、`replayable=false`），随后每行一个 event、再每行一个 fixture；fixture 的 `requestJson` 解析为 `request` 对象，便于阅读与扫描。
+6. **导出后扫描**：对最终对象扫描 `sk-`、`ghp_`、`AKIA`、`xox[baprs]-` 等模式，报告行号、记录类型、seq / fixture key 与字段路径；只告警，不自动删除。`sk-` 等模式是安全网，不是 DLP 保证。
+7. **导出不可重放**：脱敏会改变请求内容，哈希仍来自原始数据；文件明确标注 `replayable=false`，不提供 import。
+
+**理由**：
+
+- 脱敏若发生在录制阶段，会破坏“请求指纹 → fixture”的确定性契约，或者迫使 replay / fork 也做同样的改写，扩大错误面。
+- 导出时应用规则可以保留 cassette 的完整因果信息，同时让分享物按需变形。
+- 规则持久化让用户不必为分享重新写一遍正则。
+- 拒绝原始导出、标注不可重放，符合“宁可显式失败，不静默造假”。
+
+**代价**：cassette 本身仍可能包含业务数据与模型输出，必须本地保存并 gitignore；内置规则只覆盖已知 header 名与 env 后缀，无法识别任意自定义密钥；正则规则可能误伤或漏脱敏，导出后仍需人工检查扫描结果；JSONL 保留原始 request / response 哈希，不能用于 replay / verify。

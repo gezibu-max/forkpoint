@@ -19,6 +19,12 @@ import {
   RunNotFoundError,
   UsageError,
 } from "../core/errors.js";
+import {
+  readStoredRedactionRules,
+  serializeRedactionRules,
+  type RedactionRule,
+  type StoredRedactionRule,
+} from "../core/redact.js";
 import { isRunId, createRunId } from "../core/ulid.js";
 import { openCassette, type Cassette, type RunRow } from "../store/cassette.js";
 import { installClockBoundary } from "./clock-boundary.js";
@@ -38,11 +44,7 @@ import {
 } from "./overrides.js";
 import { installRngBoundary } from "./rng-boundary.js";
 
-export interface RedactionRule {
-  name: string;
-  pattern: RegExp;
-  replacement: string;
-}
+export type { RedactionRule };
 
 export interface PricingEntry {
   inputPer1M?: number;
@@ -82,6 +84,7 @@ export class Forkpoint {
     this.runId = options.runId;
     this.envWhitelist = [...(options.envWhitelist ?? DEFAULT_ENV_WHITELIST)];
     this.redact = [...(options.redact ?? [])];
+    serializeRedactionRules(this.redact);
     this.pricing = { ...(options.pricing ?? {}) };
     this.failOnEnvChange =
       options.failOnEnvChange ?? process.env.FORKPOINT_FAIL_ON_ENV_CHANGE === "1";
@@ -124,6 +127,7 @@ export class Forkpoint {
         formatCommand(process.argv[0] ?? "node", process.argv.slice(1));
       const metadata = collectRunMetadata(command);
       const environment = captureEnvironment(this.envWhitelist);
+      const redactionRules = serializeRedactionRules(this.redact);
 
       const existing = cassette.getRun(runId);
       if (existing === undefined) {
@@ -140,7 +144,8 @@ export class Forkpoint {
           config: {
             argv: process.argv,
             envWhitelist: this.envWhitelist,
-            redactionRules: this.redact.map((rule) => rule.name),
+            redactionRules: redactionRules.map((rule) => rule.name),
+            ...(redactionRules.length === 0 ? {} : { redactionPatterns: redactionRules }),
             ...(metadata.lockfileHash === undefined ? {} : { lockfileHash: metadata.lockfileHash }),
           },
           env: environment.env,
@@ -148,6 +153,15 @@ export class Forkpoint {
       } else {
         if (existing.status !== "recording") throw new RunExistsError(runId);
         cassette.updateRunEnvironment(runId, environment.env);
+        cassette.updateRunConfig(
+          runId,
+          mergeRunConfig(existing.configJson, {
+            envWhitelist: this.envWhitelist,
+            redactionRules: redactionRules.map((rule) => rule.name),
+            ...(redactionRules.length === 0 ? {} : { redactionPatterns: redactionRules }),
+            ...(metadata.lockfileHash === undefined ? {} : { lockfileHash: metadata.lockfileHash }),
+          }),
+        );
       }
 
       const effectiveName = existing?.name ?? name;
@@ -258,6 +272,8 @@ export class Forkpoint {
         kind === "fork"
           ? { ...(baselineOverrides ?? {}), ...this.overrides }
           : baselineOverrides;
+      const ownRules = serializeRedactionRules(this.redact);
+      const redactionRules = ownRules.length > 0 ? ownRules : storedRedactionRules(baseline);
 
       const existing = cassette.getRun(runId);
       const effectiveName = existing?.name ?? baseline.name;
@@ -279,7 +295,8 @@ export class Forkpoint {
               ? { replayedFrom: baseline.id }
               : { forkedFrom: baseline.id, overrides }),
             envWhitelist: this.envWhitelist,
-            redactionRules: this.redact.map((rule) => rule.name),
+            redactionRules: redactionRules.map((rule) => rule.name),
+            ...(redactionRules.length === 0 ? {} : { redactionPatterns: redactionRules }),
             ...(metadata.lockfileHash === undefined ? {} : { lockfileHash: metadata.lockfileHash }),
           },
           env: environment.env,
@@ -289,6 +306,15 @@ export class Forkpoint {
           throw new RunExistsError(runId);
         }
         cassette.updateRunEnvironment(runId, environment.env);
+        cassette.updateRunConfig(
+          runId,
+          mergeRunConfig(existing.configJson, {
+            envWhitelist: this.envWhitelist,
+            redactionRules: redactionRules.map((rule) => rule.name),
+            ...(redactionRules.length === 0 ? {} : { redactionPatterns: redactionRules }),
+            ...(metadata.lockfileHash === undefined ? {} : { lockfileHash: metadata.lockfileHash }),
+          }),
+        );
       }
 
       cassette.appendEvent(runId, {
@@ -443,6 +469,33 @@ function storedOverrides(run: RunRow): ForkOverrides | undefined {
   if (raw === undefined) return undefined;
   const overrides = validateForkOverrides(raw);
   return hasForkOverrides(overrides) ? overrides : undefined;
+}
+
+function mergeRunConfig(
+  configJson: string | undefined,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  if (configJson === undefined) return patch;
+  let config: unknown;
+  try {
+    config = JSON.parse(configJson) as unknown;
+  } catch {
+    return patch;
+  }
+  return typeof config === "object" && config !== null
+    ? { ...(config as Record<string, unknown>), ...patch }
+    : patch;
+}
+
+function storedRedactionRules(run: RunRow): StoredRedactionRule[] {
+  if (run.configJson === undefined) return [];
+  let config: unknown;
+  try {
+    config = JSON.parse(run.configJson) as unknown;
+  } catch {
+    return [];
+  }
+  return readStoredRedactionRules(config);
 }
 
 function environmentChanges(

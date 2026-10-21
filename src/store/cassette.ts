@@ -153,6 +153,12 @@ export class Cassette {
       .run(toJsonText(env, "$.env"), runId);
   }
 
+  updateRunConfig(runId: string, config: unknown): void {
+    this.db
+      .prepare("UPDATE runs SET config_json = ? WHERE id = ?")
+      .run(toJsonText(config, "$.config"), runId);
+  }
+
   appendEvent(runId: string, event: EventInput): void {
     const record: EventRecord = {
       ...event,
@@ -259,19 +265,16 @@ export class Cassette {
         "SELECT * FROM fixtures WHERE run_id = ? AND kind = ? AND fixture_key = ? AND occurrence = ?",
       )
       .get(runId, kind, fixtureKey, occurrence);
-    if (row === undefined) return undefined;
+    return row === undefined ? undefined : mapFixture(row);
+  }
 
-    return {
-      kind: String(row.kind),
-      fixtureKey: String(row.fixture_key),
-      occurrence: Number(row.occurrence),
-      ...(row.callsite === null ? {} : { callsite: String(row.callsite) }),
-      ...(row.request_json === null ? {} : { requestJson: String(row.request_json) }),
-      ...(row.response_blob === null
-        ? {}
-        : { response: parseJsonText(Buffer.from(row.response_blob as Uint8Array).toString("utf8")) }),
-      ...(row.meta_json === null ? {} : { meta: parseJsonText(String(row.meta_json)) }),
-    };
+  listFixtures(runId: string): FixtureRow[] {
+    return this.db
+      .prepare(
+        "SELECT * FROM fixtures WHERE run_id = ? ORDER BY kind ASC, fixture_key ASC, occurrence ASC",
+      )
+      .all(runId)
+      .map(mapFixture);
   }
 
   putBlob(content: string | Uint8Array, encoding = "utf8"): string {
@@ -336,6 +339,20 @@ function mapRun(row: Record<string, unknown>): RunRow {
     ...(row.env_json === null ? {} : { envJson: String(row.env_json) }),
     ...(row.seed === null ? {} : { seed: Number(row.seed) }),
     ...(row.metrics_json === null ? {} : { metricsJson: String(row.metrics_json) }),
+  };
+}
+
+function mapFixture(row: Record<string, unknown>): FixtureRow {
+  return {
+    kind: String(row.kind),
+    fixtureKey: String(row.fixture_key),
+    occurrence: Number(row.occurrence),
+    ...(row.callsite === null ? {} : { callsite: String(row.callsite) }),
+    ...(row.request_json === null ? {} : { requestJson: String(row.request_json) }),
+    ...(row.response_blob === null
+      ? {}
+      : { response: parseJsonText(Buffer.from(row.response_blob as Uint8Array).toString("utf8")) }),
+    ...(row.meta_json === null ? {} : { meta: parseJsonText(String(row.meta_json)) }),
   };
 }
 
