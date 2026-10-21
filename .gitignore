@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.forkpoint/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+*.bak
+*.sqlite-wal
+*.sqlite-shm
