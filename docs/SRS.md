@@ -1,10 +1,10 @@
 # Forkpoint 需求说明书（SRS）
 
 - 版本：v0.1
-- 日期：2026-10-21
+- 日期：2026-10-22
 - 状态：Draft
 - 对应产品文档：`docs/PRD.md` v0.2
-- 适用范围：v0.1（TypeScript SDK + CLI，Node.js >= 24）
+- 适用范围：v0.1（TypeScript SDK + CLI + Claude Code 插件，Node.js >= 24）
 - 读者：实现者、代码评审者、面试中的技术追问者
 
 ---
@@ -20,12 +20,13 @@
 Forkpoint v0.1 交付：
 
 - 一个 TypeScript SDK：包装 OpenAI 兼容客户端与工具函数，录制一次 Agent 运行。
-- 一个 CLI：`record` / `ls` / `show` / `replay` / `fork` / `diff` / `verify` / `export`。
+- 一个 CLI：`record` / `ls` / `show` / `replay` / `fork` / `diff` / `verify` / `export` / `observe`。
 - 一个本地 cassette 格式：SQLite 单文件，带 `schema_version` 与自动迁移。
 - 一套严格重放与 fork/diff 能力。
+- 一个 Claude Code 插件：strict 命令包装 CLI，observe hooks 记录宿主的工具事件（observe-only，不可重放）。
 - 一组面向作品集的文档与 benchmark。
 
-不在范围内：托管服务、Web UI、Python SDK、MCP 协议录制、HTTP 通用拦截、多进程因果追踪、工具副作用回滚、`repair` / `merge`。
+不在范围内：托管服务、Web UI、Python SDK、MCP 协议录制、HTTP 通用拦截、多进程因果追踪、工具副作用回滚、`repair` / `merge`、严格重放 Claude Code 宿主会话。
 
 ### 1.3 术语
 
@@ -41,6 +42,9 @@ Forkpoint v0.1 交付：
 | Strict | 只读 cassette、阻断真实调用、不匹配即失败 |
 | Fork | 以基线 Run 为基础，覆盖 LLM 配置后重新执行 LLM 步骤 |
 | First divergence | 两条 Run 对齐后第一个不一致的事件 |
+| Observed run | 由 Claude Code hooks 写入的工具事件 trace，`mode=observed`，不含 LLM 边界，不可重放 |
+| Strict mode | 插件命令启动受控子进程并从 cassette 回放 LLM / tool / clock / RNG 的模式 |
+| Observe mode | 插件通过 hooks 记录宿主工具事件的模式，默认关闭，只用于浏览与 diff |
 
 ### 1.4 参考文档
 
@@ -76,6 +80,7 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 
 - 父进程负责生命周期、cassette 管理、报告生成。
 - 子进程负责执行 Agent 代码；通过环境变量切换模式。
+- Claude Code 插件是第二种入口：strict 命令启动受控子进程；observe hooks 只写工具 trace，不进入 replay / verify。
 - 无服务端、无遥测、无外部依赖。
 
 ### 2.2 用户类别
@@ -456,6 +461,7 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 | `diff` | `<base> <variant>`、`-o`、`--format` | 报告 |
 | `verify` | `<run_id>` | 通过/失败 |
 | `export` | `<run_id>`、`--redact`、`-o` | 导出文件 |
+| `observe` | `hook`、`--event`、`--store`（stdin JSON） | observed run / 忽略结果 |
 
 - **处理**：
   - 全局 `--store`、`--json`、`--verbose`、`--debug`。
@@ -498,6 +504,31 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
   - 子类：`FixtureMissError`、`RequestMismatchError`、`LiveCallBlockedError`、`RngMismatchError`、`RngExhaustedError`、`ClockReadLimitError`、`NoActiveRunError`、`NestedRunError`、`NonSerializableError`、`EnvChangedError`、`NondeterminismError`、`CassetteCorruptError`、`MigrationError`、`UnsupportedStreamMethodError`。
   - CLI 退出码映射：数据/重放错误 → 1；用法/参数错误 → 2。
 - **验收**：每个错误码有单测；CLI 输出含 `code` 与下一步建议。
+
+### FR-025 Claude Code 插件（strict + observe）
+
+- **优先级**：P1（作品集交付）
+- **描述**：以 Claude Code 插件交付两种明确分离的能力，不把宿主会话伪装成可严格重放。
+- **输入/输出**：
+
+| 入口 | 输入 | 输出 |
+|---|---|---|
+| `/forkpoint:record` / `replay` / `verify` / `diff` / `fork` / `runs` | 用户参数与项目路径 | 受控子进程或 CLI 报告 |
+| 插件 hooks | Claude Code hook payload（`session_id`、`event_name`、`tool_name`、`tool_input`、`tool_output` 等） | `mode=observed` 的本地 trace |
+| `forkpoint observe hook` | stdin 的 JSON payload | 无 stdout；`--json` 时输出结果摘要 |
+
+- **处理**：
+  - 插件包提供 `.claude-plugin/marketplace.json`、`plugin/.claude-plugin/plugin.json`、commands、hooks、skill 与 CLI 解析脚本。
+  - strict 命令通过 `node plugin/scripts/cli.mjs` 调用 CLI；解析顺序为 `FORKPOINT_CLI` → 仓库 `dist/cli/index.js` → 当前项目已安装的 `forkpoint`。找不到时给可执行建议，不运行替代命令。
+  - observe 只在 `FORKPOINT_OBSERVE=1` 时写入；默认 store 为 `<session cwd>/.forkpoint`，`FORKPOINT_STORE` 可覆盖。
+  - 每个会话对应 `obs_<session_id>`；`SessionStart` 写 `observe.start`，`PreToolUse` / `PostToolUse` 写 `tool.call` / `tool.result`，`SessionEnd` 写 `run.end` 并更新 metrics。同一 session 被 resume 时追加新的 `observe.start` 并把状态改回 `observing`。
+  - 并发 hook 使用单条原子 `INSERT ... SELECT MAX(seq)+1` 分配 `seq`；重复的 `observe.start` / `run.end` 在 `observing` / `observed` 状态下幂等。
+  - observed run 的 `replay` / `verify` / `fork` 在读取 baseline 时抛 `UsageError`；`diff` caveats 首条标注 observe-only。
+- **异常**：
+  - 缺少 `session_id` 或 payload 非法 → CLI 退出码 2；hook 包装脚本吞掉错误并始终退出 0，避免阻塞宿主。
+  - hook 超过 10 秒 → 包装脚本终止子进程并退出 0。
+  - CLI 无法解析 → strict 命令报错；hook 写 stderr 后退出 0。
+- **验收**：A13、A14 通过；observed run 被 replay/verify/fork 拒绝；diff caveat 含 “Observed Claude Code runs”；`FORKPOINT_OBSERVE` 未设置时不产生 cassette。
 
 ---
 
@@ -554,13 +585,14 @@ forkpoint <command> [options]
 ```ts
 type Event =
   | { type: "run.start"; payload: { name: string; mode: Mode; parentRunId?: string } }
+  | { type: "observe.start"; payload: { name: string; source: "claude-code"; sessionId: string; transcriptPath?: string; model?: string; agentType?: string; sessionSource?: string } }
   | { type: "run.end"; payload: { status: "ok" | "failed"; error?: string } }
   | { type: "llm.request"; payload: { provider: string; model: string; stream: boolean; request: unknown } }
   | { type: "llm.response"; payload: { response: unknown; usage?: Usage; finishReason?: string; responseId?: string; stream: boolean } }
   | { type: "llm.chunk"; payload: { index: number; chunk: unknown } }
   | { type: "llm.error"; payload: { name: string; message: string; aborted: boolean } }
-  | { type: "tool.call"; payload: { name: string; args: unknown; isWrite: boolean } }
-  | { type: "tool.result"; payload: { name: string; result: unknown } }
+  | { type: "tool.call"; payload: { name: string; args: unknown; isWrite: boolean; toolUseId?: string } }
+  | { type: "tool.result"; payload: { name: string; result: unknown; toolUseId?: string } }
   | { type: "tool.error"; payload: { name: string; errorName: string; message: string } }
   | { type: "clock.now"; payload: { source: string; value: number } }
   | { type: "rng.value"; payload: { source: string; value: string } }
@@ -584,6 +616,8 @@ interface EventRecord {
 ```
 
 （上面 `tool.error` 的 payload 应为 `{ name, errorName, message }`；实现时以类型定义为准。）
+
+Observed run 不使用 `run.start`，而以 `observe.start` 标记来源；它只包含 `observe.start`、`tool.call`、`tool.result`、`run.end`，不产生任何 `llm.*`、`clock.now` 或 `rng.value` 事件。
 
 ### 4.4 Canonical JSON 与指纹
 
@@ -659,6 +693,8 @@ LLM 指纹输入：
 | `FORKPOINT_BASELINE_RUN_ID` | replay / fork 时读取 fixture 的只读基线 | CLI 父进程 |
 | `FORKPOINT_STORE` | cassette 目录 | CLI 父进程 |
 | `FORKPOINT_OVERRIDES` | fork 覆盖项 JSON | CLI 父进程 |
+| `FORKPOINT_OBSERVE` | `1` 时启用 Claude Code observe hooks；默认关闭 | 用户 |
+| `FORKPOINT_CLI` | 插件脚本使用的 CLI 入口路径（可选） | 用户 |
 | `FORKPOINT_DEBUG` | 打印内部日志 | 用户 |
 
 ---
@@ -708,6 +744,8 @@ LLM 指纹输入：
 | A10 | prior-art 点名 3 个项目并说明差异 | 文档 | 人工审查 |
 | A11 | D14 demo/README/博客初稿可展示 | 全部 | 里程碑检查 |
 | A12 | README 每条声明可复现，无未验证数字 | 全部 | 人工审查 |
+| A13 | 插件 hooks 在 `FORKPOINT_OBSERVE=1` 时写入 observed run，未设置时不写；observed run 被 replay/verify/fork 拒绝 | FR-025 | 单测 + CLI 集成 |
+| A14 | `diff` 对 observed run 输出 observe-only caveat；插件 manifest/hooks/commands 可解析 | FR-025 | 单测 |
 
 ---
 
@@ -731,6 +769,9 @@ LLM 指纹输入：
 14. 图片、音频等二进制消息体只做原样存储与告警，不做语义 diff。
 15. strict replay 要求完整消费 baseline 的 clock / RNG 序列；代码路径变化导致多读、少读或换源都会失败。
 16. live SDK / tool 内部的 clock / RNG 读取不进入边界；如果第三方库在 wrapper 之外直接读取，仍可能造成漂移。
+17. Claude Code 插件的 observe 模式只记录工具事件，不记录宿主的 LLM 流量、提示词、token、clock 或 RNG，不可重放、不可 verify。
+18. observe 依赖 Claude Code hooks；未覆盖的宿主动作、hook 丢失或超时不在承诺内；hooks 失败不阻塞宿主。
+19. 插件不能替目标项目接入 SDK；strict 模式要求子进程调用 `fp.run()` 与 `fp.wrapOpenAI()`。
 
 ---
 
@@ -801,3 +842,4 @@ Forkpoint replay failed (strict)
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v0.1 | 2026-10-21 | 初稿；确定 TypeScript、Node >= 24、`node:sqlite`、Forkpoint 命名；明确不做 MCP 协议 / repair / merge |
+| v0.1 | 2026-10-22 | 增加 FR-025：Claude Code 插件双模式；observe 为工具级 trace，明确不可重放；补充 `observe.start` 事件、`FORKPOINT_OBSERVE` 与验收 A13/A14 |

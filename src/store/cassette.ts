@@ -76,6 +76,7 @@ export class Cassette {
   private readonly pending: EventRecord[] = [];
   private readonly seqByRun = new Map<string, number>();
   private readonly insertEvent: ReturnType<DatabaseSync["prepare"]>;
+  private readonly insertEventNextSeq: ReturnType<DatabaseSync["prepare"]>;
   private readonly insertFixture: ReturnType<DatabaseSync["prepare"]>;
   private closed = false;
 
@@ -87,6 +88,14 @@ export class Cassette {
         run_id, seq, type, span_id, parent_span_id, ts, duration_ms,
         callsite, request_hash, response_hash, payload
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.insertEventNextSeq = this.db.prepare(`
+      INSERT INTO events (
+        run_id, seq, type, span_id, parent_span_id, ts, duration_ms,
+        callsite, request_hash, response_hash, payload
+      )
+      SELECT ?, COALESCE(MAX(seq), -1) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      FROM events WHERE run_id = ?
     `);
     this.insertFixture = this.db.prepare(`
       INSERT INTO fixtures (
@@ -170,6 +179,25 @@ export class Cassette {
     };
     this.pending.push(record);
     if (this.pending.length >= EVENT_FLUSH_THRESHOLD) this.flush();
+  }
+
+  appendEventNow(runId: string, event: EventInput): void {
+    // One INSERT ... SELECT so concurrent hook processes cannot choose the same seq.
+    this.insertEventNextSeq.run(
+      runId,
+      event.type,
+      event.spanId ?? null,
+      event.parentSpanId ?? null,
+      event.ts ?? realNow(),
+      event.durationMs ?? null,
+      event.callsite ?? null,
+      event.requestHash ?? null,
+      event.responseHash ?? null,
+      event.payload === undefined
+        ? null
+        : Buffer.from(toJsonText(event.payload, "$.payload"), "utf8"),
+      runId,
+    );
   }
 
   flush(): void {

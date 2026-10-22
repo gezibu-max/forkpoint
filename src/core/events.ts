@@ -1,6 +1,13 @@
 export type Mode = "record" | "replay" | "fork" | "off";
-export type StoredRunMode = "recorded" | "replayed" | "forked";
-export type RunStatus = "recording" | "recorded" | "replayed" | "forked" | "failed";
+export type StoredRunMode = "recorded" | "replayed" | "forked" | "observed";
+export type RunStatus =
+  | "recording"
+  | "recorded"
+  | "replayed"
+  | "forked"
+  | "observing"
+  | "observed"
+  | "failed";
 
 export interface Usage {
   prompt_tokens?: number;
@@ -13,6 +20,18 @@ export interface Usage {
 
 export type Event =
   | { type: "run.start"; payload: { name: string; mode: Mode; parentRunId?: string } }
+  | {
+      type: "observe.start";
+      payload: {
+        name: string;
+        source: "claude-code";
+        sessionId: string;
+        transcriptPath?: string;
+        model?: string;
+        agentType?: string;
+        sessionSource?: string;
+      };
+    }
   | { type: "run.end"; payload: { status: "ok" | "failed"; error?: string } }
   | {
       type: "llm.request";

@@ -113,6 +113,11 @@ export function readBaseline(store: string, runId: string): RunRow {
   try {
     const run = cassette.getRun(runId);
     if (run === undefined) throw new RunNotFoundError(runId, store);
+    if (run.mode === "observed") {
+      throw new UsageError(
+        `Run ${run.id} is an observed Claude Code trace. Observed runs record tool calls only and cannot be replayed, verified, or forked; compare them with \`forkpoint diff\`.`,
+      );
+    }
     return run;
   } finally {
     cassette.close();

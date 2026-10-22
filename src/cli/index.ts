@@ -42,6 +42,12 @@ import {
   parseExportArguments,
   toExportOptions,
 } from "./export.js";
+import {
+  observeHelp,
+  observeHookCommand,
+  parseObserveArguments,
+  toObserveOptions,
+} from "./observe.js";
 
 interface CommonOptions {
   store?: string;
@@ -68,6 +74,8 @@ if (argv[0] === "record") {
   await runFork(argv.slice(1));
 } else if (argv[0] === "export") {
   await runExport(argv.slice(1));
+} else if (argv[0] === "observe") {
+  await runObserve(argv.slice(1));
 } else if (argv.length === 0) {
   buildProgram().outputHelp();
 } else {
@@ -168,6 +176,21 @@ async function runExport(args: string[]): Promise<void> {
   }
 }
 
+async function runObserve(args: string[]): Promise<void> {
+  const wantsJson = args.includes("--json");
+  try {
+    const parsed = parseObserveArguments(args);
+    if (parsed === "help") {
+      process.stdout.write(`${observeHelp()}\n`);
+      process.exitCode = 0;
+      return;
+    }
+    process.exitCode = await observeHookCommand(toObserveOptions(parsed));
+  } catch (error) {
+    process.exitCode = printError(error, { json: wantsJson, debug: args.includes("--debug") });
+  }
+}
+
 function buildProgram(): Command {
   const program = new Command();
   program
@@ -242,6 +265,16 @@ function buildProgram(): Command {
     .action(() => {
       throw new UsageError(
         "export must be the first argument: forkpoint export <run_id> --redact [-o <file>]",
+      );
+    });
+
+  program
+    .command("observe")
+    .description("Record Claude Code hook payloads as an observe-only trace")
+    .allowUnknownOption(true)
+    .action(() => {
+      throw new UsageError(
+        "observe must be the first argument: forkpoint observe hook [--event <name>]",
       );
     });
 

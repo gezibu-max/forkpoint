@@ -61,6 +61,7 @@ record ──► cassette ──► replay ──► verify
 | `fork` | 换 model / temperature / system prompt 真实重跑 LLM，工具世界冻结 |
 | `diff` | 按 `callsite + ordinal` 对齐，输出首次分歧、字段差异和 token / 延迟对比 |
 | `export` | 导出脱敏 JSONL，强制 `--redact` |
+| `observe` | 从 Claude Code hooks 摄入工具事件，生成 observe-only trace（不可重放） |
 
 每次 replay / fork 都会创建新的 variant run，baseline 不会被修改。
 
@@ -126,6 +127,53 @@ npx tsx src/cli/index.ts diff <run_id> <fork_run_id>
 
 fork 时 LLM 真实调用，工具不执行，只按请求指纹从 baseline fixture 读取结果。若新模型请求了未记录的工具参数，直接抛 `FixtureMissError`，不会静默执行或编造结果。
 
+## 在 Claude Code 里使用
+
+Forkpoint 也是一个 Claude Code 插件，分两种模式，边界不同：
+
+| 模式 | 做什么 | 严格重放 |
+|---|---|---|
+| **strict** | `/forkpoint:record` 等命令启动一个使用 Forkpoint SDK 的 Node agent 子进程 | 可以 |
+| **observe** | hooks 记录 Claude Code 会话的工具调用，生成只读 trace | 不可以 |
+
+```bash
+# 安装
+/plugin marketplace add gezibu-max/forkpoint
+/plugin install forkpoint@forkpoint
+
+# 本地开发
+claude --plugin-dir ./plugin
+```
+
+### strict：录制自己的 agent
+
+```bash
+/forkpoint:record my-run -- node agent.mjs
+/forkpoint:replay <run_id>
+/forkpoint:verify <run_id>
+/forkpoint:diff <base_id> <variant_id>
+/forkpoint:fork <run_id> --model gpt-4.1-mini
+/forkpoint:runs
+```
+
+目标命令必须已经使用 SDK（`fp.run` + `fp.wrapOpenAI`）；插件不做自动插桩。
+
+### observe：看 Claude Code 自己做了什么
+
+```bash
+export FORKPOINT_OBSERVE=1
+claude
+```
+
+hooks 只记录 `PreToolUse` / `PostToolUse` 等工具事件，生成 `mode=observed` 的 trace：
+
+- 可以 `ls`、`show`、`diff`；
+- 不能 `replay` / `verify` / `fork`，命令会显式拒绝；
+- 默认关闭；hook 失败不阻塞会话，只写 stderr；
+- trace 含原始工具输入/输出，可能带密钥，分享前用 `export --redact`。
+
+这不是能力缩水，而是平台边界：Claude Code 的 hooks 看不到宿主与模型之间的原始 LLM 流量，也无法控制宿主的 clock / RNG。把 observe 说成“可重放”就是造假，Forkpoint 不做。细节见 [plugin/README.md](plugin/README.md)。
+
 ## 在代码里使用
 
 ```ts
@@ -163,7 +211,7 @@ forkpoint diff <base_run_id> <variant_run_id> -o reports/model-swap.md
 
 ## 边界
 
-不支持：流式响应（计划 v0.2）、MCP 协议录制、Python SDK、多进程因果追踪、`repair` / `merge`、OS 级沙箱、原始未脱敏导出。
+不支持：流式响应（计划 v0.2）、MCP 协议录制、Python SDK、多进程因果追踪、`repair` / `merge`、OS 级沙箱、原始未脱敏导出。Claude Code 的 observe trace 只有工具事件，不记录宿主 LLM 流量，也不可重放。
 
 fork 是 **closed-world**：工具 fixture 按精确请求指纹匹配，模型即使只改 SQL 别名也可能 fixture miss；此时显式失败，而不是编造结果。
 
@@ -176,13 +224,16 @@ fork 是 **closed-world**：工具 fixture 按精确请求指纹匹配，模型�
 | `src/core/` | canonical JSON、事件哈希、diff、错误模型、脱敏 |
 | `src/sdk/` | `wrapOpenAI`、`tool`、clock / RNG 边界、replay / fork 执行 |
 | `src/store/` | SQLite cassette |
-| `src/cli/` | `record` / `replay` / `verify` / `fork` / `diff` / `export` |
+| `src/observe/` | Claude Code hook 事件摄入与 observed run |
+| `src/cli/` | `record` / `replay` / `verify` / `fork` / `diff` / `export` / `observe` |
+| `plugin/` | Claude Code 插件（commands / hooks / skill / 启动脚本） |
+| `.claude-plugin/` | marketplace 清单 |
 | `examples/sql-agent/` | Text2SQL demo |
-| `test/` | 93 个测试，覆盖边界、并发、变体、脱敏与 CLI |
+| `test/` | 109 个测试，覆盖边界、并发、变体、脱敏、observe 与 CLI |
 
 ## 状态
 
-pre-alpha，单人三周作品集项目。已实现非流式录制、严格重放、verify、fork、diff 和脱敏导出。
+pre-alpha，单人三周作品集项目。已实现非流式录制、严格重放、verify、fork、diff、脱敏导出，以及 Claude Code 插件的 strict + observe 双模式。
 
 下一步：流式响应、mutation benchmark、CI 示例、v0.1.0。
 

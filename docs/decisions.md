@@ -291,3 +291,27 @@
 - 拒绝原始导出、标注不可重放，符合“宁可显式失败，不静默造假”。
 
 **代价**：cassette 本身仍可能包含业务数据与模型输出，必须本地保存并 gitignore；内置规则只覆盖已知 header 名与 env 后缀，无法识别任意自定义密钥；正则规则可能误伤或漏脱敏，导出后仍需人工检查扫描结果；JSONL 保留原始 request / response 哈希，不能用于 replay / verify。
+
+---
+
+## ADR-017：Claude Code 插件采用双模式，宿主会话只做 observe
+
+**背景**：把 Forkpoint 以 Claude Code 插件形式交付时，最直觉的承诺是“录制并严格重放 Claude Code 自己的会话”。但插件只能通过 hooks 接收事件：hooks 在独立进程中运行，拿到的是 `session_id`、`tool_name`、`tool_input`、`tool_output`、`transcript_path` 等字段，**看不到宿主与模型之间的原始 LLM 请求/响应，也无法 patch 宿主的 `Date`、`Math.random` 或网络栈**。宿主的分支由模型驱动，不在插件控制范围内。
+
+**决策**：
+
+1. **strict 模式保留在子进程**：插件命令包装现有 CLI；`/forkpoint:record` 等在 Forkpoint 控制下启动一个 Node agent 子进程。目标命令必须使用 SDK（`fp.run` + `fp.wrapOpenAI`），继续具备 LLM / tool / clock / RNG / env 的严格重放能力。
+2. **observe 模式只记录宿主工具事件**：hooks 把 `SessionStart` / `PreToolUse` / `PostToolUse` / `SessionEnd` 写入 `mode=observed` 的 run。只产生 `observe.start`、`tool.call`、`tool.result`、`run.end`，不产生任何 `llm.*` 事件。
+3. **observe 显式不可重放**：`replay` / `verify` / `fork` 在 `readBaseline` 处拒绝 observed run；`diff` 在 caveats 首行标注 observe-only。界面与文档不使用“重放 Claude Code 会话”的表述。
+4. **observe 默认关闭**：只有 `FORKPOINT_OBSERVE=1` 时 hooks 才写入；hook 包装脚本始终以 0 退出，录制失败只写 stderr，不阻塞工具调用。
+5. **事件写入跨进程原子**：hooks 可能并发执行，`appendEventNow()` 使用单条 `INSERT ... SELECT COALESCE(MAX(seq), -1) + 1 ... WHERE run_id = ?`，不依赖进程内 `seq` 缓存；`SessionStart` / `SessionEnd` 通过事件存在性检查保证幂等。
+6. **run id 绑定会话**：observed run 使用 `obs_<session_id>`，同一 Claude Code 会话的多次 hook 调用归入同一条 trace；`SessionEnd` 后同一 `session_id` 再次 `SessionStart`（resume）时追加新的 `observe.start` 并把状态改回 `observing`，保留多个会话段而不是丢失后续工具事件。
+
+**理由**：
+
+- 宿主不可严格重放是平台事实，不是实现偷懒；把它包装成“可重放”会直接违反“宁可失败，不造假”。
+- strict 子进程与 observe 宿主各用各的因果边界：前者能回答“这次运行为什么变”，后者只能回答“宿主工具调用发生了什么”。
+- 默认关闭和原子写入把 observe 的侵入性压到最低：不设置环境变量时不产生任何文件。
+- observed run 复用现有事件、diff、ls、show、export 能力，不引入第二套存储。
+
+**代价**：observe trace 没有 LLM 步骤、token 统计、clock / RNG 或宿主提示词，不能用于严格回归；Claude Code hooks 不保证覆盖所有宿主动作，工具事件之外的副作用不可见；并发 hook 只保证 `seq` 不冲突，不保证跨 hook 的因果排序；observed run 的 `tool.call` 不带源码 callsite，只能按 `claude-code:<tool>` + ordinal 对齐；原始工具 I/O 可能含密钥，因此必须本地保存，分享前使用 `export --redact`。插件无法替用户安装 SDK，strict 模式要求目标项目自行接入 Forkpoint。

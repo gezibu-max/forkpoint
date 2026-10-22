@@ -20,6 +20,9 @@ Forkpoint v0.1 的定位是 **Agent 边界的可复现运行层**，不是操作
 14. 图片、音频等二进制消息体只做原样存储与告警，不做语义 diff。
 15. strict replay 要求完整消费 baseline 的 clock / RNG 序列；代码路径变化导致多读、少读或换源都会失败。
 16. live SDK / tool 内部的 clock / RNG 读取不进入边界；如果第三方库在 wrapper 之外直接读取，仍可能造成漂移。
+17. Claude Code 插件的 observe 模式只记录工具事件，不记录宿主的 LLM 流量、提示词、token、clock 或 RNG，**不可重放、不可 verify**。
+18. observe 依赖 Claude Code hooks；hooks 未覆盖的宿主动作、工具之外的副作用、hook 丢失或执行超时都不在承诺内。
+19. 插件不能替目标项目接入 SDK；strict 模式要求子进程自己调用 `fp.run()` 与 `fp.wrapOpenAI()`。
 
 ## 2. clock / RNG 的实际语义
 
@@ -39,7 +42,8 @@ Forkpoint v0.1 的定位是 **Agent 边界的可复现运行层**，不是操作
 
 - 同一进程内只允许一个顶层 `fp.run()`；重叠调用会抛 `NestedRunError`，不会共享或错配 clock / RNG 序列。
 - 子进程、worker、并行 task 不共享 cassette 上下文；跨进程因果顺序不承诺。
-- 一个 cassette 文件通过 `node:sqlite` 访问；并发写入不是本项目的目标场景。
+- strict record / replay 仍是单写者模型；observe hooks 可能并发写入，`seq` 由单条原子 INSERT 分配，不冲突，但不同 hook 之间的先后顺序不保证。
+- 一个 cassette 文件通过 `node:sqlite` 访问；SQLite 写锁等待上限为 5 秒，密集并发 hook 或慢磁盘仍可能超时。observe 失败不会阻塞宿主会话。
 
 ## 5. 安全与隐私
 
@@ -48,7 +52,19 @@ Forkpoint v0.1 的定位是 **Agent 边界的可复现运行层**，不是操作
 - 无遥测、无自动上传；cassette 可能包含业务数据与模型输出，默认应加入 `.gitignore`。
 - API key 不应写入代码、cassette、导出文件或提交历史。
 
-## 6. 当前未交付
+## 6. Claude Code 插件与 observe 模式
+
+- **strict 模式**：插件命令启动一个受 Forkpoint 控制的 Node agent 子进程，能力与 CLI 相同；目标命令必须使用 SDK。插件不是 auto-instrumentation，不能包装任意宿主会话。
+- **observe 模式**：hooks 记录 `SessionStart` / `PreToolUse` / `PostToolUse` / `SessionEnd`，生成 `mode=observed`、`status=observed` 的 run。
+  - 只有 `FORKPOINT_OBSERVE=1` 时写入；默认关闭，不设置环境变量时不产生文件。
+  - hooks 始终以 0 退出；录制失败只写 stderr，不阻塞工具调用。
+  - observed run 没有 `llm.*` 事件、没有 token、没有 clock / RNG；`replay` / `verify` / `fork` 会显式拒绝。
+  - 工具 callsite 固定为 `claude-code:<tool>`；同一工具的多次调用按 ordinal 对齐。
+  - 同一 `session_id` 被 resume 时，trace 会包含多个 `observe.start` / `run.end` 会话段，仍归入同一条 observed run。
+  - 原始工具输入/输出可能包含密钥；cassette 本地保存并 gitignore，分享前使用 `export --redact`。
+  - 宿主的提示词、模型响应与 transcript 内容不复制进 cassette，只保存 `transcript_path` 引用。
+
+## 7. 当前未交付
 
 - 20-run mutation benchmark（SRS FR-023）尚未完成，README 不宣称相关数字。
 - 流式响应（SRS FR-003）延期至 v0.2。

@@ -86,6 +86,9 @@ const CAVEATS = [
   "Cost is not estimated in v0.1; tokens and duration come from the cassette.",
 ];
 
+const OBSERVED_CAVEAT =
+  "Observed Claude Code runs record tool calls only; they have no LLM steps and cannot be replayed, verified, or forked.";
+
 export function collectSteps(events: EventRecord[]): Step[] {
   const steps: Step[] = [];
   const pending = new Map<StepKind, number>();
@@ -226,7 +229,10 @@ export function buildDiff(
       base: summarizeRun(baseEvents, baseSteps),
       variant: summarizeRun(variantEvents, variantSteps),
     },
-    caveats: CAVEATS,
+    caveats:
+      base.mode === "observed" || variant.mode === "observed"
+        ? [OBSERVED_CAVEAT, ...CAVEATS]
+        : CAVEATS,
   };
 }
 

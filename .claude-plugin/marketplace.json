@@ -1,0 +1,31 @@
+{
+  "name": "forkpoint",
+  "owner": {
+    "name": "gezibu-max"
+  },
+  "metadata": {
+    "description": "Claude Code plugin for Forkpoint: deterministic replay and first-divergence diff for Node.js agents.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "forkpoint",
+      "source": "./plugin",
+      "description": "Strict record/replay/verify/diff/fork for instrumented Node.js agents, plus observe-only traces of Claude Code tool calls.",
+      "version": "0.1.0",
+      "author": {
+        "name": "gezibu-max"
+      },
+      "homepage": "https://github.com/gezibu-max/forkpoint",
+      "repository": "https://github.com/gezibu-max/forkpoint",
+      "license": "Apache-2.0",
+      "category": "development",
+      "tags": [
+        "agents",
+        "deterministic-replay",
+        "testing",
+        "debugging"
+      ]
+    }
+  ]
+}
