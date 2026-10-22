@@ -524,6 +524,7 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
   - 每个会话对应 `obs_<session_id>`；`SessionStart` 写 `observe.start`，`PreToolUse` / `PostToolUse` / `PostToolUseFailure` 写 `tool.call` / `tool.result` / `tool.error`，`SessionEnd` 写带 `reason` 的 `run.end` 并更新 metrics。同一 session 被 resume 时追加新的 `observe.start` 并把状态改回 `observing`。
   - 并发 hook 使用单条原子 `INSERT ... SELECT MAX(seq)+1` 分配 `seq`；重复的 `observe.start` / `run.end` 在 `observing` / `observed` 状态下幂等。
   - observed run 的 `replay` / `verify` / `fork` 在读取 baseline 时抛 `UsageError`；`diff` caveats 首条标注 observe-only。
+  - 同一 skill 同时提供 `.agents/skills/forkpoint/SKILL.md` 与 `plugin/skills/forkpoint/SKILL.md` 两份逐字节一致的副本；前者供扫描 `.agents/skills/` 的 Agent Skills 宿主发现，使用 `npx --yes forkpoint` 调用 CLI。跨宿主不包含 observe；format 用官方 `skills-ref validate` 校验。
 - **异常**：
   - 缺少 `session_id` 或 payload 非法 → CLI 退出码 2；hook 包装脚本吞掉错误并始终退出 0，避免拒绝宿主工具。
   - hook 超过 10 秒 → 包装脚本终止子进程并退出 0；hooks.json 的外层 timeout 设为 15 秒，给包装脚本留出干净退出的余量。
@@ -748,6 +749,7 @@ LLM 指纹输入：
 | A13 | 插件 hooks 在 `FORKPOINT_OBSERVE=1` 时写入 observed run，未设置时不写；observed run 被 replay/verify/fork 拒绝 | FR-025 | 单测 + CLI 集成 |
 | A14 | `diff` 对 observed run 输出 observe-only caveat；插件 manifest/hooks/commands 可解析 | FR-025 | 单测 |
 | A15 | 插件目录自带可执行 CLI bundle；在只有插件目录的环境中可运行 `--help` 并完成 strict record/replay；hook 包装脚本转发 stdin、失败时仍退出 0 | FR-025 | 可执行集成测试 |
+| A16 | `.agents/skills/forkpoint/SKILL.md` 与插件内副本逐字节一致，frontmatter 含合法 `name` / `description` / `compatibility`，且通过官方 `skills-ref validate` | FR-025 | 单测 + 官方校验器 |
 
 ---
 
@@ -846,3 +848,4 @@ Forkpoint replay failed (strict)
 | v0.1 | 2026-10-21 | 初稿；确定 TypeScript、Node >= 24、`node:sqlite`、Forkpoint 命名；明确不做 MCP 协议 / repair / merge |
 | v0.1 | 2026-10-22 | 增加 FR-025：Claude Code 插件双模式；observe 为工具级 trace，明确不可重放；补充 `observe.start` 事件、`FORKPOINT_OBSERVE` 与验收 A13/A14 |
 | v0.1 | 2026-10-22 | 插件自带 CLI bundle，修复 marketplace 安装解析链；observe 记录 `PostToolUseFailure` 为 `tool.error`；补充 hook 延迟、缺失 `SessionEnd` 与验收 A15 |
+| v0.1 | 2026-10-22 | 增加可移植 Agent Skills 副本 `.agents/skills/forkpoint/SKILL.md`；跨宿主只覆盖 CLI 能力，不含 observe；补充验收 A16 |

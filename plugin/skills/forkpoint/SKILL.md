@@ -1,6 +1,7 @@
 ---
 name: forkpoint
-description: Work with Forkpoint cassettes and Claude Code session traces. Use when the user wants to record, strictly replay, verify, diff, or fork a Node.js agent run, or inspect tool calls from a Claude Code session with Forkpoint.
+description: Work with Forkpoint cassettes and agent session traces. Use when the user wants to record, strictly replay, verify, diff, or fork a Node.js agent run, or inspect tool calls from a Claude Code session with Forkpoint.
+compatibility: Requires Node.js 24+ and the forkpoint CLI. Observe mode requires the Claude Code plugin; record, replay, verify, diff, fork, and export work in other Agent Skills hosts.
 ---
 
 # Forkpoint
@@ -9,10 +10,14 @@ Forkpoint records the boundaries of a Node.js agent run, replays them without ca
 
 ## Commands
 
-Run these through the plugin wrapper, which resolves the local CLI:
+Claude Code plugin installs use the bundled CLI; other Agent Skills hosts use the npm package:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" <command> [args...]
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" <command> [args...]
+else
+  npx --yes forkpoint <command> [args...]
+fi
 ```
 
 | Command | Purpose |
@@ -24,7 +29,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" <command> [args...]
 | `fork <run-id> --model <name>` | Live model calls with tools frozen from the baseline |
 | `ls` / `show <run-id> --events` | Browse cassettes |
 | `export <run-id> --redact -o <file>` | Shareable JSONL, never replayable |
-| `observe hook` | Ingest a Claude Code hook payload from stdin |
+| `observe hook` | Ingest a Claude Code hook payload from stdin (Claude Code plugin only) |
 
 ## Hard rules
 
@@ -37,4 +42,6 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" <command> [args...]
 
 ## Observe mode
 
-Hooks are registered by the plugin, but recording is off unless `FORKPOINT_OBSERVE=1` is set before Claude Code starts. The store defaults to `<session cwd>/.forkpoint`; `FORKPOINT_STORE` overrides it. Hook failures never deny a tool, but `PreToolUse` still adds a synchronous Node process per call. A missing `SessionEnd` can leave a run in `status=observing`.
+The Claude Code plugin registers hooks, but recording is off unless `FORKPOINT_OBSERVE=1` is set before Claude Code starts. The store defaults to `<session cwd>/.forkpoint`; `FORKPOINT_STORE` overrides it. Hook failures never deny a tool, but `PreToolUse` still adds a synchronous Node process per call. A missing `SessionEnd` can leave a run in `status=observing`.
+
+Other Agent Skills hosts do not expose the same hook payloads, so they can use record, replay, verify, diff, and fork, but not observe mode or strict replay of the host session.

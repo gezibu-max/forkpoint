@@ -336,3 +336,25 @@
 - 保留仓库 `dist` 优先，开发时改动立即生效，不必每次重新打包插件。
 
 **代价**：bundle 约 235 KB，依赖代码重复；每次改动 CLI 都要重新 build 并提交生成物，否则插件会运行旧代码；bundle 内的堆栈指向打包行号，不利于排查；仍需 Node.js >= 24。CI 会在 Linux 上重建并校验 bundle 与源码同步。
+
+---
+
+## ADR-019：用 Agent Skills 作为跨宿主最小层，不写第二套 hook 适配器
+
+**背景**：Claude Code 插件格式只适用于 Claude Code。当前活跃的 agent 宿主普遍支持 Agent Skills（`SKILL.md` + YAML frontmatter），部分宿主还会扫描工作区的 `.agents/skills/`。用户要求在“当前活跃 agent 社区的插件格式”上验证，但本机只安装了 Claude Code CLI；Codex CLI、Gemini CLI、Cursor 等均不可用。可选方案是：只保留 Claude Code 插件、为每个宿主写 hook 适配器、或提供格式标准化的 skill 并复用 CLI。
+
+**决策**：
+
+1. **只做 Agent Skills 这一层**：在 `.agents/skills/forkpoint/SKILL.md` 放置与 `plugin/skills/forkpoint/SKILL.md` 逐字节一致的副本，并按官方规范补齐 `name` / `description` / `compatibility`。测试比较两份文件，防止漂移。
+2. **CLI 双路径**：skill 内检测 `CLAUDE_PLUGIN_ROOT`；在插件内用自带 bundle，在其他宿主用 `npx --yes forkpoint`。不复制第二套 CLI 实现。
+3. **能力边界写进 skill**：跨宿主只承诺 `record` / `replay` / `verify` / `diff` / `fork` / `export` / `ls` / `show`。observe 明确标注 Claude Code plugin only，因为其他宿主不提供同等的 hook payload，也没有宿主的 LLM/clock/RNG 流量。
+4. **不为未安装的宿主写适配器**：不伪造 Codex/Gemini hooks，不在文档中声称“已支持”。验证范围限定为官方 `skills-ref validate` 与 Qoder 的实际自动发现；Codex/Gemini 标注未做运行时验证。
+
+**理由**：
+
+- Agent Skills 是多个活跃宿主共享的格式标准，复用现有 skill 与 CLI 的边际成本最低。
+- observe 的价值来自 Claude Code 的具体 hook 字段；移植到没有等价事件的宿主只会产生不可重放的假 trace。
+- 逐字节副本 + 测试比“维护两份措辞相近的 skill”更不容易漂移。
+- 明确区分“格式通过校验 / 被发现”和“在宿主里跑通”，符合“宁可失败，不造假”。
+
+**代价**：仓库内有两份相同 skill；`npx` 路径依赖 npm 网络与已发布版本，离线环境不可用；跨宿主没有斜杠命令与 hooks，只有 CLI；`.agents/skills` 的发现规则由各宿主自行实现，Qoder 之外的宿主未实测。

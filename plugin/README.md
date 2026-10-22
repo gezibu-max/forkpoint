@@ -35,6 +35,14 @@ Resolution order:
 
 If none is found, the wrapper prints an actionable error instead of running something else.
 
+## Other Agent Skills hosts
+
+The repository also contains `.agents/skills/forkpoint/SKILL.md`, a byte-identical copy of the plugin skill, for Agent Skills hosts that discover workspace skills from `.agents/skills/`. Qoder already discovers it.
+
+Outside Claude Code there is no plugin root and no hook payload, so the skill falls back to `npx --yes forkpoint` and exposes only the CLI commands: `record`, `replay`, `verify`, `diff`, `fork`, `export`, `ls`, and `show`. Observe mode is Claude Code-only.
+
+Both copies pass the official `skills-ref validate`. Codex CLI and Gemini CLI were not installed on the development machine, so no runtime claim is made for them.
+
 ## Strict mode
 
 Strict mode runs a **command**, not the host session:

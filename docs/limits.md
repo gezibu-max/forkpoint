@@ -64,6 +64,7 @@ Forkpoint v0.1 的定位是 **Agent 边界的可复现运行层**，不是操作
   - 同一 `session_id` 被 resume 时，trace 会包含多个 `observe.start` / `run.end` 会话段，仍归入同一条 observed run。
   - 原始工具输入/输出可能包含密钥；cassette 本地保存并 gitignore，分享前使用 `export --redact`。
   - 宿主的提示词、模型响应与 transcript 内容不复制进 cassette，只保存绝对路径 `transcript_path`；导出脱敏不会改写该路径。
+- **其他 Agent Skills 宿主**：`.agents/skills/forkpoint/SKILL.md` 是可移植副本（与 `plugin/skills/forkpoint/SKILL.md` 逐字节一致，测试强制），走 `npx --yes forkpoint`，只覆盖 CLI 能力。observe 依赖 Claude Code 的 hooks，其他宿主无法使用；strict 重放仍要求目标命令接入 SDK，与宿主插件格式无关。格式已通过官方 `skills-ref validate`，Qoder 已能自动发现该技能；未在 Codex CLI / Gemini CLI 上运行验证。
 
 ## 7. 当前未交付
 

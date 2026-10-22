@@ -242,8 +242,17 @@ fork 是 **closed-world**：工具 fixture 按精确请求指纹匹配，模型�
 | `src/cli/` | `record` / `replay` / `verify` / `fork` / `diff` / `export` / `observe` |
 | `plugin/` | Claude Code 插件（commands / hooks / skill / 启动脚本） |
 | `.claude-plugin/` | marketplace 清单 |
+| `.agents/skills/forkpoint/` | 可移植 Agent Skills 技能，与插件内副本逐字节一致 |
 | `examples/sql-agent/` | Text2SQL demo |
-| `test/` | 117 个测试，覆盖边界、并发、变体、脱敏、observe 与 CLI |
+| `test/` | 120 个测试，覆盖边界、并发、变体、脱敏、observe、Agent Skills 与 CLI |
+
+## 其他 Agent Skills 宿主
+
+[`.agents/skills/forkpoint/SKILL.md`](https://github.com/gezibu-max/forkpoint/blob/main/.agents/skills/forkpoint/SKILL.md) 是与插件内 skill 逐字节一致的副本，供从 `.agents/skills/` 发现工作区技能的宿主使用（Qoder 已自动发现）。在 Claude Code 插件内，skill 调用插件自带 CLI；其他宿主回退到 `npx --yes forkpoint`。
+
+跨宿主只覆盖 CLI 能力：`record` / `replay` / `verify` / `diff` / `fork` / `export` / `ls` / `show`。observe 模式依赖 Claude Code 的 hook payload，其他宿主没有等价事件，因此不可用；文档也不承诺“重放宿主会话”。
+
+两份 skill 均通过 Agent Skills 官方 `skills-ref validate`。本机未安装 Codex CLI / Gemini CLI，没有做这两个宿主的运行时验证，因此不宣称端到端可用。
 
 ## 状态
 
