@@ -4,6 +4,15 @@
   "description": "Record once. Replay deterministically. Find the fork.",
   "type": "module",
   "license": "Apache-2.0",
+  "author": "gezibu-max",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gezibu-max/forkpoint.git"
+  },
+  "homepage": "https://github.com/gezibu-max/forkpoint#readme",
+  "bugs": {
+    "url": "https://github.com/gezibu-max/forkpoint/issues"
+  },
   "engines": {
     "node": ">=24"
   },

@@ -112,7 +112,7 @@ npx tsx src/cli/index.ts diff <baseline_id> <alt-final_id>
 - `baseline → corrected`：改了第二次 SQL 的时间范围，首次分歧落在第 8 步 LLM response。
 - `baseline → alt-final`：只改最终答复，首次分歧落在第 10 步的 `$.choices[0].message.content`。
 
-同样的场景由 [test/cli.test.ts](test/cli.test.ts) 自动断言。之后 replay / verify 也要带同一个 `FORKPOINT_DEMO_TODAY`，否则 system prompt 里的日期会变。
+同样的场景由 [test/cli.test.ts](https://github.com/gezibu-max/forkpoint/blob/main/test/cli.test.ts) 自动断言。之后 replay / verify 也要带同一个 `FORKPOINT_DEMO_TODAY`，否则 system prompt 里的日期会变。
 
 ### 换一个模型
 
@@ -176,7 +176,7 @@ hooks 记录 `PreToolUse` / `PostToolUse` / `PostToolUseFailure` 等工具事件
 - 若 `SessionEnd` 没有触发，run 可能停留在 `status=observing`；
 - trace 含原始工具输入/输出，可能带密钥，分享前用 `export --redact`。
 
-这不是能力缩水，而是平台边界：Claude Code 的 hooks 看不到宿主与模型之间的原始 LLM 流量，也无法控制宿主的 clock / RNG。把 observe 说成“可重放”就是造假，Forkpoint 不做。细节见 [plugin/README.md](plugin/README.md)。
+这不是能力缩水，而是平台边界：Claude Code 的 hooks 看不到宿主与模型之间的原始 LLM 流量，也无法控制宿主的 clock / RNG。把 observe 说成“可重放”就是造假，Forkpoint 不做。细节见 [plugin/README.md](https://github.com/gezibu-max/forkpoint/blob/main/plugin/README.md)。
 
 ## 在代码里使用
 
@@ -221,7 +221,7 @@ forkpoint diff <base_run_id> <variant_run_id> -o reports/model-swap.md
 
 fork 是 **closed-world**：工具 fixture 按精确请求指纹匹配，模型即使只改 SQL 别名也可能 fixture miss；此时显式失败，而不是编造结果。
 
-完整清单见 [docs/limits.md](docs/limits.md) 与 [SRS §8](docs/SRS.md)。
+完整清单见 [docs/limits.md](https://github.com/gezibu-max/forkpoint/blob/main/docs/limits.md) 与 [SRS §8](https://github.com/gezibu-max/forkpoint/blob/main/docs/SRS.md)。
 
 ## 代码结构
 
@@ -245,10 +245,10 @@ pre-alpha，单人三周作品集项目。已实现非流式录制、严格重�
 
 ## 文档
 
-- [产品文档（PRD）](docs/PRD.md)
-- [需求说明书（SRS）](docs/SRS.md)
-- [设计决策记录（ADR）](docs/decisions.md)
-- [能力边界](docs/limits.md)
+- [产品文档（PRD）](https://github.com/gezibu-max/forkpoint/blob/main/docs/PRD.md)
+- [需求说明书（SRS）](https://github.com/gezibu-max/forkpoint/blob/main/docs/SRS.md)
+- [设计决策记录（ADR）](https://github.com/gezibu-max/forkpoint/blob/main/docs/decisions.md)
+- [能力边界](https://github.com/gezibu-max/forkpoint/blob/main/docs/limits.md)
 
 ## 相关项目
 
