@@ -200,6 +200,33 @@ describe("step collection and alignment", () => {
 });
 
 describe("diff report", () => {
+  it("classifies fixture misses and nondeterminism leaks", () => {
+    const baseEvents = runEvents("r_base");
+    for (const [errorName, category] of [
+      ["FixtureMissError", "fixture_miss"],
+      ["NondeterminismError", "nondeterminism_leak"],
+    ] as const) {
+      const variantEvents = baseEvents.map((event) =>
+        event.type === "llm.response"
+          ? ({
+              runId: "r_variant",
+              seq: event.seq,
+              ts: event.ts,
+              type: "llm.error",
+              callsite: event.callsite,
+              payload: { name: errorName, message: "failed" },
+            } satisfies EventRecord)
+          : event,
+      );
+      const report = buildDiff(baseRun, variantRun, baseEvents, variantEvents);
+
+      expect(report.firstDivergence).toMatchObject({
+        status: "error_changed",
+        category,
+      });
+    }
+  });
+
   it("reports the first differing tool call with field changes", () => {
     const report = buildDiff(
       baseRun,

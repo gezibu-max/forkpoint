@@ -160,7 +160,8 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 
 ### FR-003 流式响应录制与重放
 
-- **优先级**：P0
+- **优先级**：P2（v0.1 不实现）
+- **状态**：deferred；v0.1 对 `stream: true` 抛 `UnsupportedStreamMethodError`，不会静默降级为阻塞调用。
 - **描述**：支持 `stream: true` 的 `chat.completions.create` 与 `responses.create`。
 - **输入**：流式请求；消费者通过 `for await` 读取。
 - **处理**：
@@ -170,12 +171,12 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
   - 重放：返回 async iterable，按序 yield 录制 chunk 的深拷贝；不发起网络请求。
   - 流中错误：记录 `llm.error`；重放时在相同 chunk 之后抛出相同错误。
 - **输出**：与录制时相同顺序与内容的 chunk 序列。
-- **异常**：`FixtureMissError`；不支持的流式方法（如 `tee()` 之外的 SDK 扩展）给出 `UnsupportedStreamMethodError`。
-- **验收**：
+- **异常**：v0.1 对所有 `stream: true` 抛 `UnsupportedStreamMethodError`；v0.2 计划引入 `FixtureMissError` 与流式方法兼容范围限制。
+- **验收**（v0.2）：
   - 非流式与流式 demo 各 1 个通过；
   - 提前 break 的 Run 可重放，且报告标注 `stream.aborted`；
   - 重放后聚合文本与录制时逐字节一致。
-- **限制**：v0.1 不保证与 OpenAI SDK `Stream` 类的所有辅助方法兼容，只保证 async iterable 与 `controller.abort()`。
+- **限制**：v0.1 只保证非流式；流式推迟到 v0.2，且届时仍需限制 OpenAI SDK `Stream` 的辅助方法兼容范围。
 
 ### FR-004 工具包装
 
@@ -203,10 +204,12 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
   - Run 开始时安装 patch；结束时按栈恢复原实现。
   - 每次读取写 `clock.now` 事件（值、来源 `date.now|date.ctor|performance`）。
   - 单 Run 上限 10,000 次；超过抛 `ClockReadLimitError`，提示检查日志循环。
-  - replay：按顺序消费；耗尽后冻结在最后一个值，写 `replay.warning`；若从未录制，冻结在 `run.start` 时间并告警。
+  - replay：按顺序消费；耗尽或 baseline 从未录制时抛 `NondeterminismError`（不冻结、不补值）；Run 结束时仍有未消费的 clock 记录，同样抛 `NondeterminismError`。
+  - fork：优先按序复用 baseline；agent 代码耗尽序列或 source 不同时，取真实值写入 variant，并分别写 `CLOCK_EXTENDED` / `CLOCK_SOURCE_MISMATCH` 告警，不中断 fork。
+  - live SDK / tool 内部读取（网络栈、SDK 计时）不进入边界：这些调用通过 `AsyncLocalStorage` 的“真实来源”作用域执行，只有 agent 代码的时间读取被录制与重放。
   - `new Date(arg)`、`Date.parse`、`Date.UTC` 不受影响。
 - **输出**：虚拟时间值。
-- **异常**：`ClockReadLimitError`。
+- **异常**：`ClockReadLimitError`、`NondeterminismError`。
 - **验收**：带 `Date.now()` 分支的 demo 重放走同一分支；`verify` 两次哈希一致；`limits.md` 说明 patch 前缓存引用的限制。
 
 ### FR-006 随机数与 UUID 边界
@@ -216,10 +219,12 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 - **输入**：Agent 代码中的随机读取。
 - **处理**：
   - 统一写入 `rng` 序列，每项含 `{ source, value }`；`getRandomValues` 记录 base64 数组。
-  - replay：按序消费；`source` 不匹配抛 `RngMismatchError`；耗尽抛 `RngExhaustedError`（不冻结、不补值）。
+  - replay：按序消费；`source` 不匹配抛 `RngMismatchError`；耗尽抛 `RngExhaustedError`（不冻结、不补值）；Run 结束时仍有未消费记录抛 `NondeterminismError`。
+  - fork：优先按序复用 baseline；agent 代码耗尽序列或 source 不同时，取真实随机值写入 variant，并分别写 `RNG_EXTENDED` / `RNG_SOURCE_MISMATCH` 告警。
+  - live SDK / tool 内部的随机读取不进入边界（同 FR-005）；只有 agent 代码的读取被录制与重放。
   - 不拦截第三方库自带的 PRNG；写入 `limits.md`。
 - **输出**：与录制时相同的随机值。
-- **异常**：`RngMismatchError`、`RngExhaustedError`。
+- **异常**：`RngMismatchError`、`RngExhaustedError`、`NondeterminismError`。
 - **验收**：使用 `crypto.randomUUID()` 生成 id 的 demo 重放得到相同 id；`verify` 两次一致；缺少录制时严格失败。
 
 ### FR-007 环境快照
@@ -348,6 +353,8 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
   - 被覆盖的 LLM 步骤真实调用模型；响应写入 variant cassette。
   - 工具调用一律使用基线 fixture，不执行（closed-world）；结果 fixture 复制到 variant，使 variant 可独立重放。
   - fork 开始时写入一条 `FORK_TOOLS_FROZEN` 告警，说明工具世界被冻结。
+  - 工具 fixture 按精确请求指纹匹配；miss 时写入 `tool.error`，并以 `FixtureMissError` 终止 fork，agent 代码的 catch 不能吞掉该基础设施错误。
+  - clock / RNG 优先复用 baseline；agent 代码多读或换源时采样并记录到 variant，写告警，不中断 fork。live SDK / tool 内部读取不占用边界。
   - variant Run 记录 `parent_run_id`、`mode=forked`、`config_json.overrides`。
   - 对 forked Run 执行 replay / verify 时，自动复用其存储的覆盖项，并在 variant 写入 `FORK_OVERRIDES_APPLIED` 告警。
   - 对一个 forked Run 再 fork 时继承其覆盖项，新覆盖项优先，并写入 `FORK_OVERRIDES_INHERITED` 告警。
@@ -425,7 +432,7 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
   - `--redact` 为强制项；不提供原始导出入口。没有 `-o` 时 JSONL 写 stdout，摘要写 stderr。
   - 默认 header：`Authorization`、`api-key`、`x-api-key`、`Cookie`、`Set-Cookie`，在导出对象中按 key 替换为 `[REDACTED]`。
   - 默认敏感 env：仅在 env 快照与 `run.env` 中，`*_KEY`、`*_TOKEN`、`*_SECRET`、`*_PASSWORD` 的值替换为 `[REDACTED]`。
-  - 自定义规则：`{ name, pattern, replacement }`，按顺序应用；规则在录制时序列化进 `config_json.redactionPatterns`，replay / fork 的 variant 在自身未提供规则时继承 baseline 规则。规则只应用于导出，不改变录制 payload 与请求指纹。
+  - 自定义规则：`{ name, pattern, replacement }`，按顺序应用；规则在录制时序列化进 `config_json.redactionPatterns`，replay / fork 的 variant 把 baseline 规则与自身规则按 `name` 合并，同名时自身覆盖 baseline。规则只应用于导出，不改变录制 payload 与请求指纹。
   - 导出 JSONL：首行 meta（`formatVersion=1`、`redacted=true`、`replayable=false`），随后每行一个 event，再每行一个 fixture；fixture 的 `requestJson` 解析为 `request` 对象。
   - 导出后扫描 `sk-`、`ghp_`、`AKIA`、`xox[baprs]-` 等模式；命中列出 JSONL 行号、记录类型、seq / fixture key 与字段路径，不自动删除，也不把导出判为失败。
   - 不做“猜测性”替换；只替换已知规则。
@@ -471,7 +478,8 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 
 ### FR-023 Mutation Benchmark（开发工具）
 
-- **优先级**：P0（作品集交付物）
+- **优先级**：P1（作品集目标；v0.1 尚未完成）
+- **状态**：未实现；README 路线图与 `docs/limits.md` 如实标注。
 - **描述**：内部脚本，量化重放与定位能力。
 - **输入**：20 条真实 Run + 变更清单（prompt/model/tool output/tool schema 各 5）+ 人工标注的期望首次分歧 callsite。
 - **处理**：
@@ -715,12 +723,14 @@ LLM 指纹输入：
 6. 第三方库自带的 PRNG、patch 前缓存的函数引用不被覆盖。
 7. `new Date()` 的 patch 只覆盖无参构造；`Date.parse` / `Date.UTC` / 显式时间参数不受影响。
 8. source map 不解析；打包后的 callsite 可能指向 bundle 行号。
-9. 流式重放只保证 async iterable 与 `controller.abort()`；OpenAI SDK `Stream` 的其他辅助方法不保证。
-10. `fork` 只做全局覆盖（model / temperature / system prompt），不支持按步骤覆盖。
+9. 流式响应不在 v0.1：`stream: true` 显式抛 `UnsupportedStreamMethodError`；async iterable 录制/重放推迟到 v0.2。
+10. `fork` 只做全局覆盖（model / temperature / system prompt），不支持按步骤覆盖，也不覆盖工具 schema。
 11. 成本基于录制时 pricing 快照，不保证与账单一致。
 12. 不提供 `repair` / `merge` / 手工编辑 fixture 的支持；缺失即失败。
 13. Python / Java / Go Agent 不支持。
 14. 图片、音频等二进制消息体只做原样存储与告警，不做语义 diff。
+15. strict replay 要求完整消费 baseline 的 clock / RNG 序列；代码路径变化导致多读、少读或换源都会失败。
+16. live SDK / tool 内部的 clock / RNG 读取不进入边界；如果第三方库在 wrapper 之外直接读取，仍可能造成漂移。
 
 ---
 

@@ -251,6 +251,107 @@ describe("fork", () => {
     expect(forked.answer).toBe("forked answer");
   });
 
+  it("extends the baseline random sequence when a fork needs more randomness", async () => {
+    const store = makeStore();
+    const recorder = makeForkpoint({ store, mode: "record" });
+    const recorded = await recorder.run("fork-rng-extend", () => Math.random());
+    recorder.dispose();
+
+    const baseline = findRun(store, (run) => run.mode === "recorded");
+    const forker = makeForkpoint({
+      store,
+      mode: "fork",
+      baselineRunId: baseline.id,
+      overrides: { model: "fork-model" },
+    });
+    const forked = await forker.run("fork-rng-extend", () => [
+      Math.random(),
+      Math.random(),
+    ]);
+
+    expect(forked[0]).toBe(recorded);
+    expect(typeof forked[1]).toBe("number");
+
+    const variant = findRun(
+      store,
+      (run) => run.mode === "forked" && run.parentRunId === baseline.id,
+    );
+    expect(variant.status).toBe("forked");
+    const cassette = openCassette(store);
+    try {
+      expect(cassette.getEventsByType(variant.id, "rng.value")).toHaveLength(2);
+      const warnings = cassette
+        .getEventsByType(variant.id, "replay.warning")
+        .map((event) => (event.payload as { code: string }).code);
+      expect(warnings).toContain("RNG_EXTENDED");
+    } finally {
+      cassette.close();
+    }
+  });
+
+  it("records fresh clock values when a fork reads a different clock source", async () => {
+    const store = makeStore();
+    const recorder = makeForkpoint({ store, mode: "record" });
+    await recorder.run("fork-clock-source", () => Date.now());
+    recorder.dispose();
+
+    const baseline = findRun(store, (run) => run.mode === "recorded");
+    const forker = makeForkpoint({
+      store,
+      mode: "fork",
+      baselineRunId: baseline.id,
+      overrides: { model: "fork-model" },
+    });
+    const forked = await forker.run("fork-clock-source", () => performance.now());
+
+    expect(typeof forked).toBe("number");
+    const variant = findRun(
+      store,
+      (run) => run.mode === "forked" && run.parentRunId === baseline.id,
+    );
+    expect(variant.status).toBe("forked");
+    const cassette = openCassette(store);
+    try {
+      const warnings = cassette
+        .getEventsByType(variant.id, "replay.warning")
+        .map((event) => (event.payload as { code: string }).code);
+      expect(warnings).toContain("CLOCK_SOURCE_MISMATCH");
+      const sources = cassette
+        .getEventsByType(variant.id, "clock.now")
+        .map((event) => (event.payload as { source: string }).source);
+      expect(sources).toContain("performance");
+    } finally {
+      cassette.close();
+    }
+  });
+
+  it("does not let agent code swallow a fixture miss", async () => {
+    const store = makeStore();
+    const add = tool("add", (left: number, right: number) => left + right);
+    const recorder = makeForkpoint({ store, mode: "record" });
+    await recorder.run("fork-swallow", () => add(2, 3));
+    recorder.dispose();
+
+    const baseline = findRun(store, (run) => run.mode === "recorded");
+    const forker = makeForkpoint({
+      store,
+      mode: "fork",
+      baselineRunId: baseline.id,
+      overrides: { model: "fork-model" },
+    });
+
+    await expect(
+      forker.run("fork-swallow", () => {
+        try {
+          add(4, 5);
+        } catch (error) {
+          expect(error).toBeInstanceOf(FixtureMissError);
+        }
+        return add(6, 7);
+      }),
+    ).rejects.toBeInstanceOf(FixtureMissError);
+  });
+
   it("fails when the model asks for a tool call that was not recorded", async () => {
     const store = makeStore();
     let executions = 0;
@@ -289,6 +390,14 @@ describe("fork", () => {
       (run) => run.mode === "forked" && run.parentRunId === baseline.id,
     );
     expect(variant.status).toBe("failed");
+    const cassette = openCassette(store);
+    try {
+      const errors = cassette.getEventsByType(variant.id, "tool.error");
+      expect(errors).toHaveLength(1);
+      expect((errors[0]!.payload as { errorName: string }).errorName).toBe("FixtureMissError");
+    } finally {
+      cassette.close();
+    }
   });
 
   it("refuses to fork without an override", async () => {
@@ -397,11 +506,13 @@ describe("fork", () => {
     expect(live.calls).toBe(0);
     expect(executions).toBe(1);
 
+    let replayedRunId = "";
     const cassette = openCassette(store);
     try {
       const replayedRun = cassette
         .listRuns(50)
         .find((run) => run.mode === "replayed" && run.parentRunId === variant.id);
+      replayedRunId = replayedRun!.id;
       const warnings = cassette
         .getEventsByType(replayedRun!.id, "replay.warning")
         .map((event) => (event.payload as { code: string }).code);
@@ -409,6 +520,15 @@ describe("fork", () => {
     } finally {
       cassette.close();
     }
+
+    const secondReplayer = makeForkpoint({ store, mode: "replay", baselineRunId: replayedRunId });
+    const liveAgain = throwingClient();
+    const replayedAgain = await secondReplayer.run("fork-replay", () =>
+      callAndAdd(secondReplayer.wrapOpenAI(liveAgain), add),
+    );
+    expect(replayedAgain).toEqual(forked);
+    expect(liveAgain.calls).toBe(0);
+    expect(executions).toBe(1);
   });
 });
 

@@ -1,8 +1,13 @@
 import { elapsedMs, monotonicNow } from "../core/clock.js";
 import { captureCallsite } from "../core/callsite.js";
-import { CassetteCorruptError, errorSummary, NoActiveRunError } from "../core/errors.js";
+import {
+  CassetteCorruptError,
+  errorSummary,
+  FixtureMissError,
+  NoActiveRunError,
+} from "../core/errors.js";
 import { canonicalize, fingerprintValue } from "../core/fingerprint.js";
-import { currentRun, isArmed, nextOccurrence, type RunContext } from "./context.js";
+import { currentRun, isArmed, nextOccurrence, runWithRealSource, type RunContext } from "./context.js";
 import {
   appendReplayWarning,
   cloneJson,
@@ -33,6 +38,7 @@ export function tool<Args extends unknown[], Result>(
       if (isArmed()) throw new NoActiveRunError(captureCallsite({ label: options.label }));
       return fn.apply(this, args);
     }
+    if (context.boundaryError !== undefined) throw context.boundaryError;
 
     const callsite = captureCallsite({ label: options.label });
     const toolArgs = args.length === 1 ? args[0] : args;
@@ -63,7 +69,7 @@ export function tool<Args extends unknown[], Result>(
     const startedAt = monotonicNow();
     let result: Result;
     try {
-      result = fn.apply(this, args);
+      result = runWithRealSource(() => fn.apply(this, args));
     } catch (error) {
       recordToolError(context, name, requestHash, requestJson, occurrence, callsite, isWrite, false, error, elapsedMs(startedAt));
       throw error;
@@ -97,7 +103,21 @@ function replayToolCall(
   callsite: string,
   requestJson: string,
 ): unknown {
-  const fixture = getReplayFixture(context, "tool", requestHash, occurrence, callsite);
+  let fixture: ReturnType<typeof getReplayFixture>;
+  try {
+    fixture = getReplayFixture(context, "tool", requestHash, occurrence, callsite, requestJson);
+  } catch (error) {
+    if (error instanceof FixtureMissError) {
+      context.boundaryError = error;
+      const summary = errorSummary(error);
+      context.cassette.appendEvent(context.runId, {
+        type: "tool.error",
+        payload: { name, errorName: summary.name, message: summary.message },
+        callsite,
+      });
+    }
+    throw error;
+  }
   const meta = isObject(fixture.meta) ? fixture.meta : {};
   const thenable = meta.thenable === true;
   const fork = context.mode === "fork";
@@ -109,9 +129,8 @@ function replayToolCall(
       payload: { name, errorName: recorded.name, message: recorded.message },
       callsite,
     });
-    if (fork) copyToolFixture(context, fixture, requestJson, callsite);
-    return replayFailure(recorded, thenable);
-  }
+    copyToolFixture(context, fixture, requestJson, callsite);
+    return replayFailure(recorded, thenable);  }
 
   const response = fixtureResponse(context, fixture);
   if (!isObject(response) || !("result" in response)) {
@@ -137,7 +156,7 @@ function replayToolCall(
     callsite,
     responseHash: fingerprintValue(result),
   });
-  if (fork) copyToolFixture(context, fixture, requestJson, callsite);
+  copyToolFixture(context, fixture, requestJson, callsite);
   return replayResult(result, thenable);
 }
 

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Mode } from "../core/events.js";
-import { NoActiveRunError } from "../core/errors.js";
+import { NestedRunError, NoActiveRunError } from "../core/errors.js";
 import type { Cassette } from "../store/cassette.js";
 import type { ForkOverrides } from "./overrides.js";
 
@@ -17,6 +17,7 @@ export interface RunContext {
   cassette: Cassette;
   occurrences: Map<string, number>;
   counters: RunCounters;
+  boundaryError?: Error;
   forkOverrides?: ForkOverrides;
 }
 
@@ -25,7 +26,28 @@ export function fixtureRunId(context: RunContext): string {
 }
 
 const storage = new AsyncLocalStorage<RunContext>();
+const realSourceStorage = new AsyncLocalStorage<true>();
 let armed: { mode: Mode } | undefined;
+let exclusiveRunActive = false;
+
+// Live SDK and tool internals (clock reads, randomness) must not enter the cassette;
+// only reads made by agent code are recorded and replayed.
+export function runWithRealSource<T>(fn: () => T): T {
+  return realSourceStorage.run(true, fn);
+}
+
+export function inRealSource(): boolean {
+  return realSourceStorage.getStore() === true;
+}
+
+export function beginExclusiveRun(): void {
+  if (exclusiveRunActive) throw new NestedRunError();
+  exclusiveRunActive = true;
+}
+
+export function endExclusiveRun(): void {
+  exclusiveRunActive = false;
+}
 
 export function currentRun(): RunContext | undefined {
   return storage.getStore();

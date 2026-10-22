@@ -297,7 +297,33 @@ export function isForkpointError(error: unknown): error is ForkpointError {
   return error instanceof ForkpointError;
 }
 
-export function errorSummary(error: unknown): { name: string; message: string } {
-  if (error instanceof Error) return { name: error.name, message: error.message };
-  return { name: typeof error, message: String(error) };
+export interface ErrorSummary {
+  name: string;
+  message: string;
+  status?: number;
+  code?: string | number;
+  type?: string;
+  param?: string;
+  request_id?: string;
+}
+
+const ERROR_SUMMARY_FIELDS = ["status", "code", "type", "param", "request_id"] as const;
+
+export function errorSummary(error: unknown): ErrorSummary {
+  if (!(error instanceof Error)) return { name: typeof error, message: String(error) };
+  const summary: ErrorSummary = { name: error.name, message: error.message };
+  const target = summary as unknown as Record<string, unknown>;
+  const record = error as unknown as Record<string, unknown>;
+  for (const field of ERROR_SUMMARY_FIELDS) {
+    const value = record[field];
+    if (isErrorFieldValue(value)) target[field] = value;
+  }
+  return summary;
+}
+
+function isErrorFieldValue(value: unknown): value is string | number {
+  return (
+    typeof value === "string" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
 }

@@ -6,6 +6,8 @@ import {
   EnvChangedError,
   FixtureMissError,
   LiveCallBlockedError,
+  NestedRunError,
+  NondeterminismError,
   NoActiveRunError,
   RngExhaustedError,
   RngMismatchError,
@@ -264,6 +266,91 @@ describe("strict replay", () => {
     }
   });
 
+  it("reports the nearest fixture and changed fields on a miss", async () => {
+    const store = makeStore();
+    const recorder = makeForkpoint({ store, mode: "record" });
+    const client = recorder.wrapOpenAI(fakeClient());
+    const original = {
+      ...request,
+      messages: [
+        { role: "system", content: "old" },
+        { role: "user", content: "hi" },
+      ],
+    };
+    await recorder.run("nearest-run", () => client.chat.completions.create(original));
+    recorder.dispose();
+
+    const baseline = runByName(store, "nearest-run");
+    const replayer = makeForkpoint({ store, mode: "replay", baselineRunId: baseline.id });
+    const live = replayer.wrapOpenAI(fakeClient());
+    const changed = {
+      ...original,
+      messages: [
+        { role: "system", content: "new" },
+        { role: "user", content: "hi" },
+      ],
+    };
+
+    const error = (await replayer
+      .run("nearest-run", () => live.chat.completions.create(changed))
+      .catch((caught: unknown) => caught)) as FixtureMissError;
+
+    expect(error).toBeInstanceOf(FixtureMissError);
+    expect(error.nearest).toHaveLength(1);
+    expect(error.nearest[0]!.diffPaths).toContain("$.messages[0].content");
+    expect(error.diffPaths).toContain("$.messages[0].content");
+    expect(error.actualKey).toBe(error.nearest[0]!.key);
+  });
+
+  it("does not let agent code swallow an LLM fixture miss", async () => {
+    const store = makeStore();
+    const recorder = makeForkpoint({ store, mode: "record" });
+    const client = recorder.wrapOpenAI(fakeClient());
+    await recorder.run("swallow-llm", () => client.chat.completions.create(request));
+    recorder.dispose();
+
+    const baseline = runByName(store, "swallow-llm");
+    const replayer = makeForkpoint({ store, mode: "replay", baselineRunId: baseline.id });
+    const live = replayer.wrapOpenAI(fakeClient());
+
+    await expect(
+      replayer.run("swallow-llm", async () => {
+        try {
+          await live.chat.completions.create({ ...request, temperature: 0.7 });
+        } catch {
+          return "fallback";
+        }
+        return "unreachable";
+      }),
+    ).rejects.toBeInstanceOf(FixtureMissError);
+
+    const cassette = openCassette(store);
+    try {
+      const variant = cassette
+        .listRuns(10)
+        .find((run) => run.mode === "replayed" && run.parentRunId === baseline.id);
+      expect(variant?.status).toBe("failed");
+      const errors = cassette.getEventsByType(variant!.id, "llm.error");
+      expect(errors).toHaveLength(1);
+      expect((errors[0]!.payload as { name: string }).name).toBe("FixtureMissError");
+    } finally {
+      cassette.close();
+    }
+  });
+
+  it("rejects overlapping runs in the same process", async () => {
+    const store = makeStore();
+    const fp = makeForkpoint({ store, mode: "record" });
+    const first = fp.run("overlap-first", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return 1;
+    });
+
+    await expect(fp.run("overlap-second", () => 2)).rejects.toBeInstanceOf(NestedRunError);
+    await expect(first).resolves.toBe(1);
+    await expect(fp.run("overlap-third", () => 3)).resolves.toBe(3);
+  });
+
   it("blocks live fetch calls during replay", async () => {
     const store = makeStore();
     const recorder = makeForkpoint({ store, mode: "record" });
@@ -306,6 +393,50 @@ describe("strict replay", () => {
     } finally {
       cassette.close();
     }
+  });
+
+  it("preserves recorded error fields on replay", async () => {
+    const store = makeStore();
+    const recorder = makeForkpoint({ store, mode: "record" });
+    const failing = recorder.wrapOpenAI({
+      chat: {
+        completions: {
+          create: async (_request: unknown) => {
+            throw Object.assign(new Error("rate limited"), {
+              name: "RateLimitError",
+              status: 429,
+              code: "rate_limit_exceeded",
+              type: "requests",
+              param: "model",
+              request_id: "req-123",
+            });
+          },
+        },
+      },
+    });
+
+    await expect(
+      recorder.run("llm-error-fields", () => failing.chat.completions.create(request)),
+    ).rejects.toMatchObject({ status: 429 });
+    recorder.dispose();
+
+    const baseline = runByName(store, "llm-error-fields");
+    const replayer = makeForkpoint({ store, mode: "replay", baselineRunId: baseline.id });
+    const live = replayer.wrapOpenAI(fakeClient());
+    const error = await replayer
+      .run("llm-error-fields", () => live.chat.completions.create(request))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      name: "RateLimitError",
+      message: "rate limited",
+      status: 429,
+      code: "rate_limit_exceeded",
+      type: "requests",
+      param: "model",
+      request_id: "req-123",
+    });
   });
 
   it("replays repeated identical requests in occurrence order", async () => {
@@ -374,6 +505,182 @@ describe("strict replay", () => {
     } finally {
       cassette.close();
     }
+  });
+
+  it("replays a replayed run from its copied fixtures", async () => {
+    const store = makeStore();
+    const add = tool("add", (left: number, right: number) => left + right);
+    const body = async (wrapped: FakeClient) => {
+      const response = (await wrapped.chat.completions.create(request)) as { id: string };
+      return { id: response.id, sum: add(2, 3), now: Date.now() };
+    };
+
+    const recorder = makeForkpoint({ store, mode: "record" });
+    const recorded = await recorder.run("replay-twice", () =>
+      body(recorder.wrapOpenAI(fakeClient()) as unknown as FakeClient),
+    );
+    recorder.dispose();
+
+    const baseline = runByName(store, "replay-twice");
+    const firstReplayer = makeForkpoint({ store, mode: "replay", baselineRunId: baseline.id });
+    const first = await firstReplayer.run("replay-twice", () =>
+      body(firstReplayer.wrapOpenAI(fakeClient()) as unknown as FakeClient),
+    );
+    expect(first).toEqual(recorded);
+
+    const variant = replayRun(store, baseline.id, "replay-twice");
+    const cassette = openCassette(store);
+    try {
+      expect(cassette.countFixtures(variant.id)).toBe(2);
+    } finally {
+      cassette.close();
+    }
+
+    const secondReplayer = makeForkpoint({ store, mode: "replay", baselineRunId: variant.id });
+    const second = await secondReplayer.run("replay-twice", () =>
+      body(secondReplayer.wrapOpenAI(fakeClient()) as unknown as FakeClient),
+    );
+    expect(second).toEqual(recorded);
+  });
+
+  it("keeps baseline redaction rules when a replay adds its own", async () => {
+    const store = makeStore();
+    const recorder = makeForkpoint({
+      store,
+      mode: "record",
+      redact: [{ name: "baseline-rule", pattern: /base_[a-z]+/g, replacement: "[BASE]" }],
+    });
+    await recorder.run("redact-merge", () => 1);
+    recorder.dispose();
+
+    const baseline = runByName(store, "redact-merge");
+    const replayer = makeForkpoint({
+      store,
+      mode: "replay",
+      baselineRunId: baseline.id,
+      redact: [{ name: "own-rule", pattern: /own_[a-z]+/g, replacement: "[OWN]" }],
+    });
+    await replayer.run("redact-merge", () => 1);
+
+    const cassette = openCassette(store);
+    try {
+      const variant = cassette
+        .listRuns(10)
+        .find((run) => run.mode === "replayed" && run.parentRunId === baseline.id);
+      const config = JSON.parse(variant?.configJson ?? "{}") as {
+        redactionRules?: string[];
+        redactionPatterns?: Array<{ name: string }>;
+      };
+      expect(config.redactionRules).toEqual(["baseline-rule", "own-rule"]);
+      expect(config.redactionPatterns?.map((rule) => rule.name)).toEqual([
+        "baseline-rule",
+        "own-rule",
+      ]);
+    } finally {
+      cassette.close();
+    }
+  });
+
+  it("does not record clock or RNG reads inside live SDK internals", async () => {
+    const store = makeStore();
+    const recorder = makeForkpoint({ store, mode: "record" });
+    const client = recorder.wrapOpenAI({
+      chat: {
+        completions: {
+          create: async (raw: Record<string, unknown>) => {
+            Math.random();
+            crypto.randomUUID();
+            return {
+              id: "chatcmpl-internal",
+              model: raw.model,
+              created: Date.now(),
+              generatedAt: new Date().toISOString(),
+              choices: [],
+            };
+          },
+        },
+      },
+    });
+
+    const internalTool = tool("internal_tool", () => ({
+      now: Date.now(),
+      random: Math.random(),
+    }));
+
+    const recorded = await recorder.run("internal-reads", async () => {
+      await client.chat.completions.create(request);
+      return { tool: internalTool(), now: Date.now(), random: Math.random() };
+    });
+    recorder.dispose();
+
+    const baseline = runByName(store, "internal-reads");
+    const cassette = openCassette(store);
+    try {
+      expect(cassette.getEventsByType(baseline.id, "clock.now")).toHaveLength(1);
+      expect(cassette.getEventsByType(baseline.id, "rng.value")).toHaveLength(1);
+    } finally {
+      cassette.close();
+    }
+
+    const replayer = makeForkpoint({ store, mode: "replay", baselineRunId: baseline.id });
+    const replayClient = replayer.wrapOpenAI({
+      chat: {
+        completions: {
+          create: async (_request: unknown) => {
+            throw new Error("strict replay called the live client");
+          },
+        },
+      },
+    });
+    const replayed = await replayer.run("internal-reads", async () => {
+      await replayClient.chat.completions.create(request);
+      return { tool: internalTool(), now: Date.now(), random: Math.random() };
+    });
+
+    expect(replayed).toEqual(recorded);
+  });
+
+  it("fails when replay consumes fewer clock or RNG values than recorded", async () => {
+    const store = makeStore();
+    const recorder = makeForkpoint({ store, mode: "record" });
+    await recorder.run("clock-short", () => [Date.now(), Date.now()]);
+    await recorder.run("rng-short-consumed", () => [Math.random(), Math.random()]);
+    recorder.dispose();
+
+    const clockBaseline = runByName(store, "clock-short");
+    const clockReplayer = makeForkpoint({
+      store,
+      mode: "replay",
+      baselineRunId: clockBaseline.id,
+    });
+    await expect(
+      clockReplayer.run("clock-short", () => [Date.now()]),
+    ).rejects.toBeInstanceOf(NondeterminismError);
+    expect(replayRun(store, clockBaseline.id, "clock-short").status).toBe("failed");
+
+    const rngBaseline = runByName(store, "rng-short-consumed");
+    const rngReplayer = makeForkpoint({
+      store,
+      mode: "replay",
+      baselineRunId: rngBaseline.id,
+    });
+    await expect(
+      rngReplayer.run("rng-short-consumed", () => [Math.random()]),
+    ).rejects.toBeInstanceOf(NondeterminismError);
+    expect(replayRun(store, rngBaseline.id, "rng-short-consumed").status).toBe("failed");
+  });
+
+  it("fails when replay consumes more clock reads than recorded", async () => {
+    const store = makeStore();
+    const recorder = makeForkpoint({ store, mode: "record" });
+    await recorder.run("clock-long", () => Date.now());
+    recorder.dispose();
+
+    const baseline = runByName(store, "clock-long");
+    const replayer = makeForkpoint({ store, mode: "replay", baselineRunId: baseline.id });
+    await expect(
+      replayer.run("clock-long", () => [Date.now(), Date.now()]),
+    ).rejects.toBeInstanceOf(NondeterminismError);
   });
 
   it("fails when replay consumes more randomness than recorded", async () => {

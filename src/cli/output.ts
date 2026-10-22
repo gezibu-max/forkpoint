@@ -1,4 +1,4 @@
-import { ForkpointError, isForkpointError } from "../core/errors.js";
+import { FixtureMissError, ForkpointError, isForkpointError } from "../core/errors.js";
 import type { RunRow } from "../store/cassette.js";
 
 export function printError(error: unknown, options: { json?: boolean; debug?: boolean } = {}): number {
@@ -18,6 +18,21 @@ export function printError(error: unknown, options: { json?: boolean; debug?: bo
     if (isForkpointError(error)) {
       process.stderr.write(`forkpoint: ${error.code}: ${error.message}\n`);
       if (error.callsite !== undefined) process.stderr.write(`  at ${error.callsite}\n`);
+      if (error instanceof FixtureMissError) {
+        if (error.diffPaths.length > 0) {
+          process.stderr.write(`  changed: ${error.diffPaths.join(", ")}\n`);
+        }
+        for (const candidate of error.nearest) {
+          const location = candidate.callsite === undefined ? "" : ` at ${candidate.callsite}`;
+          const detail =
+            candidate.diffPaths.length === 0
+              ? "identical request"
+              : candidate.diffPaths.join(", ");
+          process.stderr.write(
+            `  nearest: ${candidate.key.slice(0, 12)}…${location} (${detail})\n`,
+          );
+        }
+      }
       if (error.hint !== undefined) process.stderr.write(`  hint: ${error.hint}\n`);
     } else {
       process.stderr.write(`forkpoint: ${error instanceof Error ? error.message : String(error)}\n`);

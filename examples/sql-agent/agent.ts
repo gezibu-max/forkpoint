@@ -93,8 +93,9 @@ export interface RunAgentOptions {
 }
 
 export async function runAgent(options: RunAgentOptions): Promise<string> {
+  const today = process.env.FORKPOINT_DEMO_TODAY ?? new Date().toISOString();
   const messages: Message[] = [
-    { role: "system", content: systemPrompt(new Date().toISOString()) },
+    { role: "system", content: systemPrompt(today) },
     { role: "user", content: options.question },
   ];
   const maxSteps = options.maxSteps ?? 8;

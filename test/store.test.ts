@@ -77,6 +77,35 @@ describe("Cassette", () => {
     }
   });
 
+  it("snapshots event payloads before buffering", () => {
+    const store = makeStore();
+    const cassette = new Cassette(store);
+    cassette.createRun({ id: "r_snapshot", name: "snapshot", mode: "recorded", status: "recording" });
+    const messages: Array<{ role: string; content: string }> = [{ role: "user", content: "hi" }];
+    cassette.appendEvent("r_snapshot", {
+      type: "llm.request",
+      payload: {
+        provider: "openai-compatible",
+        model: "m",
+        stream: false,
+        request: { model: "m", messages },
+      },
+    });
+    messages.push({ role: "assistant", content: "later" });
+    messages[0]!.content = "mutated";
+    cassette.close();
+
+    const reopened = new Cassette(store);
+    try {
+      const payload = reopened.getEvents("r_snapshot")[0]?.payload as {
+        request: { messages: Array<{ role: string; content: string }> };
+      };
+      expect(payload.request.messages).toEqual([{ role: "user", content: "hi" }]);
+    } finally {
+      reopened.close();
+    }
+  });
+
   it("continues seq after reopening", () => {
     const store = makeStore();
     const first = new Cassette(store);

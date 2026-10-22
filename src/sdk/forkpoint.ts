@@ -20,6 +20,7 @@ import {
   UsageError,
 } from "../core/errors.js";
 import {
+  mergeRedactionRules,
   readStoredRedactionRules,
   serializeRedactionRules,
   type RedactionRule,
@@ -30,8 +31,10 @@ import { openCassette, type Cassette, type RunRow } from "../store/cassette.js";
 import { installClockBoundary } from "./clock-boundary.js";
 import {
   armInstance,
+  beginExclusiveRun,
   currentRun,
   disarmInstance,
+  endExclusiveRun,
   runWithContext,
   type RunContext,
 } from "./context.js";
@@ -108,10 +111,15 @@ export class Forkpoint {
     if (currentRun() !== undefined) throw new NestedRunError();
     if (typeof fn !== "function") throw new UsageError("fp.run() expects a function.");
     if (this.mode === "off") return await fn();
-    if (this.mode === "record") return this.runRecord(name, fn);
-    if (this.mode === "replay") return this.runVariant("replay", name, fn);
-    if (this.mode === "fork") return this.runVariant("fork", name, fn);
-    throw new NotImplementedError(`Mode "${this.mode}"`);
+    beginExclusiveRun();
+    try {
+      if (this.mode === "record") return await this.runRecord(name, fn);
+      if (this.mode === "replay") return await this.runVariant("replay", name, fn);
+      if (this.mode === "fork") return await this.runVariant("fork", name, fn);
+      throw new NotImplementedError(`Mode "${this.mode}"`);
+    } finally {
+      endExclusiveRun();
+    }
   }
 
   dispose(): void {
@@ -190,8 +198,8 @@ export class Forkpoint {
       };
 
       return await runWithContext(context, async () => {
-        const restoreClock = installClockBoundary(context);
-        const restoreRng = installRngBoundary(context);
+        const clock = installClockBoundary(context);
+        const rng = installRngBoundary(context);
         try {
           const result = await fn();
           const durationMs = elapsedMs(startedAt);
@@ -219,8 +227,8 @@ export class Forkpoint {
           }
           throw error;
         } finally {
-          restoreRng();
-          restoreClock();
+          rng.restore();
+          clock.restore();
         }
       });
     } finally {
@@ -267,13 +275,13 @@ export class Forkpoint {
         formatCommand(process.argv[0] ?? "node", process.argv.slice(1));
       const metadata = collectRunMetadata(command);
       const environment = captureEnvironment(this.envWhitelist);
-      const baselineOverrides = storedOverrides(baseline);
+      const baselineOverrides = resolveStoredOverrides(cassette, baseline);
       const overrides =
         kind === "fork"
           ? { ...(baselineOverrides ?? {}), ...this.overrides }
           : baselineOverrides;
       const ownRules = serializeRedactionRules(this.redact);
-      const redactionRules = ownRules.length > 0 ? ownRules : storedRedactionRules(baseline);
+      const redactionRules = mergeRedactionRules(storedRedactionRules(baseline), ownRules);
 
       const existing = cassette.getRun(runId);
       const effectiveName = existing?.name ?? baseline.name;
@@ -347,8 +355,8 @@ export class Forkpoint {
       const restoreFetch = kind === "replay" ? installLiveGuard() : () => {};
       try {
         return await runWithContext(context, async () => {
-          const restoreClock = installClockBoundary(context);
-          const restoreRng = installRngBoundary(context);
+          const clock = installClockBoundary(context);
+          const rng = installRngBoundary(context);
           try {
             if (changed.length > 0) {
               if (this.failOnEnvChange) {
@@ -378,8 +386,7 @@ export class Forkpoint {
                   payload: {
                     code: "FORK_OVERRIDES_INHERITED",
                     message:
-                      "The baseline is a forked run; its overrides were inherited, with new overrides taking precedence.",
-                  },
+                      "The baseline inherits overrides from a forked ancestor; they were applied, with new overrides taking precedence.",                  },
                 });
               }
             } else if (overrides !== undefined) {
@@ -388,11 +395,14 @@ export class Forkpoint {
                 payload: {
                   code: "FORK_OVERRIDES_APPLIED",
                   message:
-                    "The baseline is a forked run; its model overrides were applied to match the recorded requests.",
+                    "The baseline inherits model overrides from a forked ancestor; they were applied to match the recorded requests.",
                 },
               });
             }
             const result = await fn();
+            if (context.boundaryError !== undefined) throw context.boundaryError;
+            const nondeterminism = clock.audit() ?? rng.audit();
+            if (nondeterminism !== undefined) throw nondeterminism;
             const durationMs = elapsedMs(startedAt);
             cassette.appendEvent(runId, {
               type: "run.end",
@@ -418,8 +428,8 @@ export class Forkpoint {
             }
             throw error;
           } finally {
-            restoreRng();
-            restoreClock();
+            rng.restore();
+            clock.restore();
           }
         });
       } finally {
@@ -452,6 +462,22 @@ function buildMetrics(
     llmCalls: context.counters.llmCalls,
     toolCalls: context.counters.toolCalls,
   };
+}
+
+function resolveStoredOverrides(
+  cassette: Cassette,
+  run: RunRow,
+): ForkOverrides | undefined {
+  let current: RunRow | undefined = run;
+  const seen = new Set<string>();
+  while (current !== undefined && !seen.has(current.id)) {
+    seen.add(current.id);
+    const overrides = storedOverrides(current);
+    if (overrides !== undefined) return overrides;
+    current =
+      current.parentRunId === undefined ? undefined : cassette.getRun(current.parentRunId);
+  }
+  return undefined;
 }
 
 function storedOverrides(run: RunRow): ForkOverrides | undefined {

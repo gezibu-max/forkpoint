@@ -140,6 +140,8 @@
 
 **代价**：strict replay 不能测试“模型本身是否稳定”；那是 fork 和 benchmark 的事。报告中明确区分。
 
+**fork 的时钟 / RNG**：优先按序复用 baseline；live HTTP 栈可能读取不同来源或更多次数，此时采样新值写入 variant，并记录 `CLOCK_SOURCE_MISMATCH` / `CLOCK_EXTENDED` / `RNG_SOURCE_MISMATCH` / `RNG_EXTENDED` 告警。replay 仍保持严格，不扩展、不冻结（RNG）。
+
 ---
 
 ## ADR-009：occurrence 按 `(kind, requestHash)` 计数，不按 callsite
@@ -261,7 +263,7 @@
 - 重放 forked run 时复用覆盖项，避免“variant 能 diff、不能 verify”的断层。
 - 显式 fixture miss 比静默执行工具更符合“不造假”。
 
-**代价**：fork 只适用于工具调用序列基本不变的变更；模型大幅改变工具参数会 fixture miss，这是 v0.1 的真实边界。system prompt 全文存进 `config_json`，本地存储可接受；分享时使用 `export --redact`（见 ADR-016）。fork 不是 OS 沙箱。
+**代价**：fork 只适用于工具调用序列基本不变的变更；工具 fixture 按精确请求指纹匹配，模型即使只改写 SQL 别名也会 fixture miss。fixture miss 会写入 `tool.error` 并终止 fork，不会被 agent 的 catch 吞掉；这是 v0.1 的真实边界。system prompt 全文存进 `config_json`，本地存储可接受；分享时使用 `export --redact`（见 ADR-016）。fork 不是 OS 沙箱。
 
 ---
 

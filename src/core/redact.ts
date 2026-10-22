@@ -124,6 +124,19 @@ export function readStoredRedactionRules(config: unknown): StoredRedactionRule[]
   return deserializeRedactionRules(raw);
 }
 
+export function mergeRedactionRules(
+  base: readonly StoredRedactionRule[],
+  override: readonly StoredRedactionRule[],
+): StoredRedactionRule[] {
+  if (base.length === 0) return [...override];
+  if (override.length === 0) return [...base];
+
+  const merged = new Map<string, StoredRedactionRule>();
+  for (const rule of base) merged.set(rule.name, rule);
+  for (const rule of override) merged.set(rule.name, rule);
+  return [...merged.values()];
+}
+
 export interface RedactionOptions {
   redactEnvKeys?: boolean;
 }

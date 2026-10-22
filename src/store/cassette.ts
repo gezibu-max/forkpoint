@@ -160,8 +160,10 @@ export class Cassette {
   }
 
   appendEvent(runId: string, event: EventInput): void {
+    // Events are buffered before flush, so a live request object could be mutated by later agent steps.
     const record: EventRecord = {
       ...event,
+      payload: parseJsonText(toJsonText(event.payload, "$.payload")),
       runId,
       seq: this.nextSeq(runId),
       ts: event.ts ?? realNow(),

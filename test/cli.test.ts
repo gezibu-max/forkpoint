@@ -30,6 +30,8 @@ function cleanEnv(): NodeJS.ProcessEnv {
   delete env.FORKPOINT_STORE;
   delete env.FORKPOINT_COMMAND;
   delete env.FORKPOINT_FAIL_ON_ENV_CHANGE;
+  delete env.FORKPOINT_DEMO_PLAN;
+  delete env.FORKPOINT_DEMO_TODAY;
   return env;
 }
 
@@ -46,7 +48,7 @@ function run(store: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
   );
 }
 
-function recordDemo(store: string, name: string) {
+function recordDemo(store: string, name: string, extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync(
     process.execPath,
     [
@@ -66,7 +68,7 @@ function recordDemo(store: string, name: string) {
     ],
     {
       cwd: repoRoot,
-      env: cleanEnv(),
+      env: { ...cleanEnv(), ...extraEnv },
       encoding: "utf8",
       timeout: 60_000,
     },
@@ -190,6 +192,59 @@ describe("CLI integration", () => {
     const toFile = run(store, ["diff", runId, variant.runId, "--format", "json", "-o", output]);
     expect(toFile.status, toFile.stderr).toBe(0);
     expect(toFile.stdout).toContain("Wrote");
+  });
+
+  it("localizes tool-level and answer-level divergence in a fixed scenario set", () => {
+    const store = makeStore();
+    const fixed = { FORKPOINT_DEMO_TODAY: "2026-10-21T00:00:00.000Z" };
+    const baselineRun = recordDemo(store, "scenario-baseline", {
+      ...fixed,
+      FORKPOINT_DEMO_PLAN: "baseline",
+    });
+    const correctedRun = recordDemo(store, "scenario-corrected", {
+      ...fixed,
+      FORKPOINT_DEMO_PLAN: "corrected",
+    });
+    const altFinalRun = recordDemo(store, "scenario-alt-final", {
+      ...fixed,
+      FORKPOINT_DEMO_PLAN: "alt-final",
+    });
+
+    for (const recorded of [baselineRun, correctedRun, altFinalRun]) {
+      expect(recorded.status, recorded.stderr).toBe(0);
+    }
+    const baseline = recordedRunId(baselineRun.stdout);
+    const corrected = recordedRunId(correctedRun.stdout);
+    const altFinal = recordedRunId(altFinalRun.stdout);
+
+    const correctedDiff = run(store, ["diff", baseline, corrected, "--json"]);
+    expect(correctedDiff.status, correctedDiff.stderr).toBe(0);
+    const correctedReport = JSON.parse(correctedDiff.stdout) as {
+      firstDivergence: { status: string; fields?: Array<{ path: string }> } | null;
+      steps: Array<{ status: string }>;
+      finalOutput: { base: string; variant: string } | null;
+    };
+    expect(correctedReport.firstDivergence?.status).toBe("response_changed");
+    expect(correctedReport.firstDivergence?.fields?.[0]?.path).toContain(
+      "tool_calls[0].function.arguments",
+    );
+    expect(correctedReport.steps.slice(0, 7).every((step) => step.status === "same")).toBe(true);
+    expect(correctedReport.steps.some((step) => step.status === "request_mismatch")).toBe(true);
+    expect(correctedReport.finalOutput?.base).not.toBe(correctedReport.finalOutput?.variant);
+
+    const altFinalDiff = run(store, ["diff", baseline, altFinal, "--json"]);
+    expect(altFinalDiff.status, altFinalDiff.stderr).toBe(0);
+    const altFinalReport = JSON.parse(altFinalDiff.stdout) as {
+      firstDivergence: { status: string; fields?: Array<{ path: string }> } | null;
+      steps: Array<{ status: string }>;
+      finalOutput: { base: string; variant: string } | null;
+    };
+    expect(altFinalReport.firstDivergence?.status).toBe("response_changed");
+    expect(altFinalReport.firstDivergence?.fields?.[0]?.path).toBe(
+      "$.choices[0].message.content",
+    );
+    expect(altFinalReport.steps.slice(0, 9).every((step) => step.status === "same")).toBe(true);
+    expect(altFinalReport.finalOutput?.variant).toContain("fork demo");
   });
 
   it("rejects diffing a run against itself", () => {

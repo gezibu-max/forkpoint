@@ -2,7 +2,7 @@ import { realNow, realPerformanceNow } from "../core/clock.js";
 import { captureCallsite } from "../core/callsite.js";
 import { ClockReadLimitError, NondeterminismError } from "../core/errors.js";
 import type { EventRecord } from "../core/events.js";
-import type { RunContext } from "./context.js";
+import { inRealSource, type RunContext } from "./context.js";
 
 const MAX_CLOCK_READS = 10_000;
 
@@ -11,47 +11,79 @@ interface ClockPoint {
   value: number;
 }
 
-export function installClockBoundary(context: RunContext): () => void {
+export interface BoundaryControl {
+  restore(): void;
+  audit(): NondeterminismError | undefined;
+}
+
+export function installClockBoundary(context: RunContext): BoundaryControl {
   const controlled = context.baselineRunId !== undefined;
+  // Agent code may take a different path than the baseline; fork samples new values instead of failing.
+  const extensible = context.mode === "fork";
   const recorded = controlled ? loadRecordedClock(context) : [];
-  const fallback = controlled ? recorded[0]?.value ?? baselineStart(context) : 0;
   let index = 0;
   let reads = 0;
-  let last = fallback;
   let warned = false;
+  let sourceWarned = false;
 
   function read(source: string): number {
+    if (inRealSource()) return freshClock(source);
+
     if (!controlled) {
       reads += 1;
       if (reads > MAX_CLOCK_READS) throw new ClockReadLimitError(MAX_CLOCK_READS);
-      const value = source === "performance" ? realPerformanceNow() : realNow();
+      const value = freshClock(source);
       appendClockEvent(context, source, value);
       return value;
     }
 
     const point = recorded[index];
     if (point === undefined) {
-      if (!warned) {
-        warned = true;
-        appendWarning(
-          context,
-          recorded.length === 0 ? "CLOCK_NOT_RECORDED" : "CLOCK_EXHAUSTED",
-          recorded.length === 0
-            ? `No clock reads were recorded; freezing at ${new Date(last).toISOString()}.`
-            : "Consumed more clock reads than were recorded; freezing at the last value.",
-        );
+      if (extensible) {
+        const value = freshClock(source);
+        appendClockEvent(context, source, value);
+        if (!warned) {
+          warned = true;
+          appendWarning(
+            context,
+            "CLOCK_EXTENDED",
+            "The fork consumed more clock reads than the baseline recorded; fresh values were recorded.",
+          );
+        }
+        return value;
       }
-      return last;
+      throw new NondeterminismError(
+        recorded.length === 0
+          ? "Strict replay read the clock, but the baseline recorded no clock reads."
+          : `Strict replay consumed more clock reads than the baseline recorded (${recorded.length}).`,
+        {
+          runId: context.runId,
+          callsite: captureCallsite(),
+          hint: "The replay took a different path than the recording. Re-record the baseline or align the code path.",
+        },
+      );
     }
 
-    index += 1;
     if (point.source !== source) {
+      if (extensible) {
+        const value = freshClock(source);
+        appendClockEvent(context, source, value);
+        if (!sourceWarned) {
+          sourceWarned = true;
+          appendWarning(
+            context,
+            "CLOCK_SOURCE_MISMATCH",
+            `The fork read ${source} where the baseline recorded ${point.source}; fresh values were recorded.`,
+          );
+        }
+        return value;
+      }
       throw new NondeterminismError(
         `Clock source mismatch: recorded ${point.source}, replay read ${source}.`,
         { runId: context.runId, callsite: captureCallsite() },
       );
     }
-    last = point.value;
+    index += 1;
     appendClockEvent(context, source, point.value);
     return point.value;
   }
@@ -87,19 +119,32 @@ export function installClockBoundary(context: RunContext): () => void {
     // Some runtimes expose a non-configurable performance object; replay still has Date.
   }
 
-  return () => {
-    if (globalThis.Date === patchedDate) globalThis.Date = originalDate;
-    if (patchedPerformance) {
-      try {
-        Object.defineProperty(performance, "now", {
-          configurable: true,
-          writable: true,
-          value: originalPerformanceNow,
-        });
-      } catch {
-        // Restoring is best-effort; the patched value still reads the cassette.
+  return {
+    restore() {
+      if (globalThis.Date === patchedDate) globalThis.Date = originalDate;
+      if (patchedPerformance) {
+        try {
+          Object.defineProperty(performance, "now", {
+            configurable: true,
+            writable: true,
+            value: originalPerformanceNow,
+          });
+        } catch {
+          // Restoring is best-effort; the patched value still reads the cassette.
+        }
       }
-    }
+    },
+    audit() {
+      if (context.mode !== "replay" || index >= recorded.length) return undefined;
+      return new NondeterminismError(
+        `Strict replay consumed ${index} of ${recorded.length} recorded clock reads.`,
+        {
+          runId: context.runId,
+          callsite: captureCallsite(),
+          hint: "The replay took a different path or skipped a boundary, so later recorded values were never applied.",
+        },
+      );
+    },
   };
 }
 
@@ -136,7 +181,6 @@ function readPoint(event: EventRecord): ClockPoint | undefined {
   return { source: payload.source, value: payload.value };
 }
 
-function baselineStart(context: RunContext): number {
-  if (context.baselineRunId === undefined) return realNow();
-  return context.cassette.getEventsByType(context.baselineRunId, "run.start")[0]?.ts ?? realNow();
+function freshClock(source: string): number {
+  return source === "performance" ? realPerformanceNow() : realNow();
 }

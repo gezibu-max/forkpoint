@@ -2,12 +2,13 @@ import { elapsedMs, monotonicNow } from "../core/clock.js";
 import { captureCallsite } from "../core/callsite.js";
 import {
   errorSummary,
+  FixtureMissError,
   NoActiveRunError,
   UnsupportedStreamMethodError,
 } from "../core/errors.js";
 import { canonicalize, fingerprintValue } from "../core/fingerprint.js";
 import { toJsonText } from "../core/serialize.js";
-import { currentRun, isArmed, nextOccurrence, type RunContext } from "./context.js";
+import { currentRun, isArmed, nextOccurrence, runWithRealSource, type RunContext } from "./context.js";
 import { applyForkOverrides } from "./overrides.js";
 import {
   cloneJson,
@@ -116,6 +117,7 @@ async function handleLlmCall(
     if (isArmed()) throw new NoActiveRunError(captureCallsite());
     return original.apply(owner, args);
   }
+  if (context.boundaryError !== undefined) throw context.boundaryError;
 
   if (!isObject(rawRequest)) {
     throw new Error(`${api}.create expects a request object.`);
@@ -147,13 +149,13 @@ async function handleLlmCall(
   });
 
   if (context.mode === "replay") {
-    return replayLlmCall(context, requestHash, occurrence, callsite, stream);
+    return replayLlmCall(context, requestHash, requestJson, occurrence, callsite, stream);
   }
 
   const startedAt = monotonicNow();
   let response: unknown;
   try {
-    response = await original.apply(owner, callArgs);
+    response = await runWithRealSource(() => original.apply(owner, callArgs));
   } catch (error) {
     const summary = errorSummary(error);
     const aborted = isAborted(error, rawRequest);
@@ -217,11 +219,27 @@ async function handleLlmCall(
 async function replayLlmCall(
   context: RunContext,
   requestHash: string,
+  requestJson: string,
   occurrence: number,
   callsite: string,
   stream: boolean,
 ): Promise<unknown> {
-  const fixture = getReplayFixture(context, "llm", requestHash, occurrence, callsite);
+  let fixture;
+  try {
+    fixture = getReplayFixture(context, "llm", requestHash, occurrence, callsite, requestJson);
+  } catch (error) {
+    if (error instanceof FixtureMissError) {
+      context.boundaryError = error;
+      const summary = errorSummary(error);
+      context.cassette.appendEvent(context.runId, {
+        type: "llm.error",
+        payload: { name: summary.name, message: summary.message, aborted: false },
+        callsite,
+        requestHash,
+      });
+    }
+    throw error;
+  }
   const meta = isObject(fixture.meta) ? fixture.meta : {};
 
   const recorded = recordedError(meta);
@@ -232,6 +250,7 @@ async function replayLlmCall(
       callsite,
       requestHash,
     });
+    copyLlmFixture(context, fixture, requestJson, callsite);
     throw recorded;
   }
 
@@ -256,7 +275,25 @@ async function replayLlmCall(
     responseHash,
   });
 
+  copyLlmFixture(context, fixture, requestJson, callsite);
   return plainResponse;
+}
+
+function copyLlmFixture(
+  context: RunContext,
+  fixture: ReturnType<typeof getReplayFixture>,
+  requestJson: string,
+  callsite: string,
+): void {
+  context.cassette.putFixture(context.runId, {
+    kind: "llm",
+    fixtureKey: fixture.fixtureKey,
+    occurrence: fixture.occurrence,
+    callsite,
+    requestJson,
+    ...(fixture.response === undefined ? {} : { response: fixture.response }),
+    ...(fixture.meta === undefined ? {} : { meta: fixture.meta }),
+  });
 }
 
 function sanitizeRequest(request: UnknownRecord): UnknownRecord {

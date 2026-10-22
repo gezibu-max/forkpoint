@@ -40,7 +40,8 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<numb
 
   const first = executions[0]!;
   const second = executions[1]!;
-  const firstData = readRun(options.store, first.runId, true);
+  const baselineData = readRun(options.store, first.baselineRunId, true);
+  const firstData = readRun(options.store, first.runId, false);
   const secondData = readRun(options.store, second.runId, false);
   if (firstData === undefined || secondData === undefined) {
     throw new Error("The cassette disappeared while verifying; re-run the command.");
@@ -59,7 +60,10 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<numb
           actual: { type: "sequence", hash: secondReport.hash },
         });
   const ok = difference === undefined;
-  const unconsumed = Math.max(0, (firstData.fixtureCount ?? 0) - countConsumed(firstData.events));
+  const unconsumed = Math.max(
+    0,
+    (baselineData?.fixtureCount ?? 0) - countConsumed(firstData.events),
+  );
 
   if (options.json) {
     printJson({

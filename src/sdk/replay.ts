@@ -1,4 +1,10 @@
-import { CassetteCorruptError, FixtureMissError, ToolExecutionError } from "../core/errors.js";
+import { diffFields } from "../core/diff.js";
+import {
+  CassetteCorruptError,
+  FixtureMissError,
+  ToolExecutionError,
+  type NearestFixture,
+} from "../core/errors.js";
 import type { FixtureRow } from "../store/cassette.js";
 import type { RunContext } from "./context.js";
 
@@ -10,6 +16,7 @@ export function getReplayFixture(
   fixtureKey: string,
   occurrence: number,
   callsite: string,
+  requestJson: string,
 ): FixtureRow {
   const sourceRunId = context.baselineRunId;
   if (sourceRunId === undefined) {
@@ -18,13 +25,60 @@ export function getReplayFixture(
 
   const fixture = context.cassette.getFixture(sourceRunId, kind, fixtureKey, occurrence);
   if (fixture === undefined) {
+    const nearest = nearestFixtures(context, sourceRunId, kind, requestJson);
     throw new FixtureMissError(fixtureKey, {
       runId: sourceRunId,
       callsite,
       hint: `No ${kind} fixture for occurrence ${occurrence} in baseline run ${sourceRunId}. Re-record, or check for a boundary that is not wrapped.`,
+      ...(nearest[0] === undefined ? {} : { actualKey: nearest[0].key }),
+      nearest,
+      diffPaths: nearest[0]?.diffPaths ?? [],
     });
   }
   return fixture;
+}
+
+function nearestFixtures(
+  context: RunContext,
+  sourceRunId: string,
+  kind: "llm" | "tool",
+  requestJson: string,
+): NearestFixture[] {
+  const actual = parseJson(requestJson);
+  if (actual === undefined) return [];
+
+  const seen = new Set<string>();
+  const candidates: Array<NearestFixture & { score: number }> = [];
+  for (const fixture of context.cassette.listFixtures(sourceRunId)) {
+    if (fixture.kind !== kind || fixture.requestJson === undefined) continue;
+    if (seen.has(fixture.fixtureKey)) continue;
+    const recorded = parseJson(fixture.requestJson);
+    if (recorded === undefined) continue;
+
+    seen.add(fixture.fixtureKey);
+    const changes = diffFields(recorded, actual, 50);
+    candidates.push({
+      key: fixture.fixtureKey,
+      ...(fixture.callsite === undefined ? {} : { callsite: fixture.callsite }),
+      diffPaths: changes.slice(0, 5).map((change) => change.path),
+      score: changes.length,
+    });
+  }
+
+  candidates.sort((left, right) => left.score - right.score || left.key.localeCompare(right.key));
+  return candidates.slice(0, 3).map(({ key, callsite, diffPaths }) => ({
+    key,
+    ...(callsite === undefined ? {} : { callsite }),
+    diffPaths,
+  }));
+}
+
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 export function fixtureResponse(context: RunContext, fixture: FixtureRow): unknown {
@@ -37,12 +91,24 @@ export function fixtureResponse(context: RunContext, fixture: FixtureRow): unkno
   return fixture.response;
 }
 
+const RECORDED_ERROR_FIELDS = ["status", "code", "type", "param", "request_id"] as const;
+
 export function recordedError(meta: unknown): Error | undefined {
   if (!isObject(meta) || !isObject(meta.error)) return undefined;
-  const name = typeof meta.error.name === "string" ? meta.error.name : "Error";
-  const message = typeof meta.error.message === "string" ? meta.error.message : "Recorded error";
-  const error = new Error(message);
+  const raw = meta.error;
+  const name = typeof raw.name === "string" ? raw.name : "Error";
+  const message = typeof raw.message === "string" ? raw.message : "Recorded error";
+  const error = new Error(message) as Error & Record<string, unknown>;
   error.name = name;
+  for (const field of RECORDED_ERROR_FIELDS) {
+    const value = raw[field];
+    if (
+      typeof value === "string" ||
+      (typeof value === "number" && Number.isFinite(value))
+    ) {
+      error[field] = value;
+    }
+  }
   return error;
 }
 

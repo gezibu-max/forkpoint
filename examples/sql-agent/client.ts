@@ -78,6 +78,17 @@ ORDER BY total DESC
 LIMIT 10
 `.trim();
 
+const CORRECTED_SQL = `
+SELECT c.name AS customer_name, ROUND(SUM(o.amount), 2) AS total
+FROM orders o
+JOIN customers c ON c.id = o.customer_id
+WHERE o.created_at >= date('now', 'start of month', '-1 month')
+  AND o.created_at < date('now', 'start of month')
+GROUP BY c.name
+ORDER BY total DESC
+LIMIT 10
+`.trim();
+
 const DEMO_PLAN = process.env.FORKPOINT_DEMO_PLAN ?? "baseline";
 
 class ScriptedClient implements ChatClient {
@@ -107,7 +118,11 @@ class ScriptedClient implements ChatClient {
       case 2:
         return completion(request, [this.toolCall("run_sql", { sql: AMBIGUOUS_SQL })]);
       case 3:
-        return completion(request, [this.toolCall("run_sql", { sql: WRONG_WINDOW_SQL })]);
+        return completion(request, [
+          this.toolCall("run_sql", {
+            sql: DEMO_PLAN === "corrected" ? CORRECTED_SQL : WRONG_WINDOW_SQL,
+          }),
+        ]);
       default:
         return completion(request, undefined, summarize(request, this.step, DEMO_PLAN));
     }
@@ -132,7 +147,7 @@ function completion(
   return {
     id: `chatcmpl-scripted-${toolCalls === undefined ? "final" : toolCalls[0]!.id}`,
     object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
+    created: 0,
     model: request.model ?? "scripted-model",
     choices: [
       {

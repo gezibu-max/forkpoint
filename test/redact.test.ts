@@ -3,6 +3,7 @@ import { UsageError } from "../src/core/errors.js";
 import {
   createRedactor,
   deserializeRedactionRules,
+  mergeRedactionRules,
   readStoredRedactionRules,
   scanSecrets,
   serializeRedactionRules,
@@ -108,5 +109,20 @@ describe("redaction", () => {
       stored([{ name: "id", pattern: /int_[a-z]+/, replacement: "[X]" }]),
     );
     expect(redactor("int_abc int_def")).toBe("[X] [X]");
+  });
+
+  it("merges rules by name with the override winning", () => {
+    const base = stored([{ name: "shared", pattern: /base/g, replacement: "[BASE]" }]);
+    const own = stored([
+      { name: "shared", pattern: /own/g, replacement: "[OWN]" },
+      { name: "extra", pattern: /extra/g, replacement: "[EXTRA]" },
+    ]);
+
+    expect(mergeRedactionRules(base, own)).toEqual([
+      { name: "shared", source: "own", flags: "g", replacement: "[OWN]" },
+      { name: "extra", source: "extra", flags: "g", replacement: "[EXTRA]" },
+    ]);
+    expect(mergeRedactionRules([], own)).toEqual(own);
+    expect(mergeRedactionRules(base, [])).toEqual(base);
   });
 });

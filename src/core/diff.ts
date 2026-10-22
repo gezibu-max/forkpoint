@@ -10,6 +10,8 @@ export type StepStatus =
   | "missing_step"
   | "added_step";
 export type DivergenceCategory =
+  | "nondeterminism_leak"
+  | "fixture_miss"
   | "request_mismatch"
   | "output_changed"
   | "tool_exception"
@@ -269,7 +271,20 @@ function alignmentKey(step: Step): string {
     : `llm|${step.callsite}|${step.ordinal}`;
 }
 
+const NONDETERMINISM_ERRORS = new Set([
+  "NondeterminismError",
+  "RngMismatchError",
+  "RngExhaustedError",
+  "ClockReadLimitError",
+]);
+
 function categorize(alignment: AlignedStep): DivergenceCategory {
+  const errorName = alignment.variant?.error?.name ?? alignment.base?.error?.name;
+  if (errorName === "FixtureMissError") return "fixture_miss";
+  if (errorName !== undefined && NONDETERMINISM_ERRORS.has(errorName)) {
+    return "nondeterminism_leak";
+  }
+
   switch (alignment.status) {
     case "request_mismatch":
       return "request_mismatch";
