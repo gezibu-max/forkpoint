@@ -69,4 +69,4 @@ Forkpoint v0.1 的定位是 **Agent 边界的可复现运行层**，不是操作
 
 - 20-run mutation benchmark（SRS FR-023）尚未完成，README 不宣称相关数字。
 - 流式响应（SRS FR-003）延期至 v0.2。
-- GitHub Actions CI 工作流尚未落地；本地自检命令为 `npm test`、`npm run typecheck`、`npm run build`。
+- GitHub Actions CI 已落地（`.github/workflows/ci.yml`）：Windows / macOS / Linux + Node 24 执行 build、typecheck、test；Linux 额外检查 `plugin/lib/cli.mjs` 是否与源码同步。本地自检命令为 `npm test`、`npm run typecheck`、`npm run build`。

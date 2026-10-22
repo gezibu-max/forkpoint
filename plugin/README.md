@@ -61,6 +61,8 @@ await fp.run("my-run", async () => {
 });
 ```
 
+The npm package is not published yet. Use Forkpoint from this repository, or install it locally with `npm install /path/to/forkpoint`; the plugin itself already bundles the CLI.
+
 `record` re-executes the command with `FORKPOINT_MODE=record`. `replay` and `verify` answer every boundary from the cassette and block live `fetch`. `fork` calls the model live with the requested override while serving tool calls from the baseline cassette.
 
 ## Observe mode

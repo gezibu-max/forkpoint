@@ -3,6 +3,7 @@
 > Record once. Replay deterministically. Find the fork.
 
 ![status](https://img.shields.io/badge/status-pre--alpha-orange)
+![ci](https://github.com/gezibu-max/forkpoint/actions/workflows/ci.yml/badge.svg)
 ![node](https://img.shields.io/badge/node-%3E%3D24-339933)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
@@ -178,6 +179,8 @@ hooks 记录 `PreToolUse` / `PostToolUse` / `PostToolUseFailure` 等工具事件
 这不是能力缩水，而是平台边界：Claude Code 的 hooks 看不到宿主与模型之间的原始 LLM 流量，也无法控制宿主的 clock / RNG。把 observe 说成“可重放”就是造假，Forkpoint 不做。细节见 [plugin/README.md](plugin/README.md)。
 
 ## 在代码里使用
+
+`forkpoint` 尚未发布到 npm。目前请在仓库内使用，或从本地路径安装到目标项目（`npm install /path/to/forkpoint`）。
 
 ```ts
 import OpenAI from "openai";
