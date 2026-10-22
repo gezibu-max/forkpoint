@@ -6,7 +6,7 @@ import { resolveCliEntry } from "./resolve-cli.mjs";
 const HOOK_TIMEOUT_MS = 10_000;
 const STDERR_LIMIT = 4_000;
 
-// Hooks must never block the host session, so every path exits 0.
+// Hooks must never deny the host tool call, so every failure path exits 0.
 // Drain stdin first so a disabled hook cannot leave the host with a broken pipe.
 if (process.stdin.isTTY) process.exit(0);
 const payload = readStdin().trim();

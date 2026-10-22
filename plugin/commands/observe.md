@@ -8,11 +8,11 @@ Explain and inspect Forkpoint observe mode.
 
 `forkpoint observe` records Claude Code tool calls from hooks into a local observed trace. It is **observe-only**:
 
-- Only tool calls (`PreToolUse` / `PostToolUse`) are recorded.
+- Only tool calls (`PreToolUse` / `PostToolUse` / `PostToolUseFailure`) are recorded.
 - Claude Code's LLM requests, responses, clock, and RNG are not exposed to plugins.
 - Observed runs cannot be replayed, verified, or forked. They are for browsing and `diff`.
 
-Recording is off by default. Enable it by setting `FORKPOINT_OBSERVE=1` in the environment before starting Claude Code; unset it to stop. Hooks exit 0 even when recording fails, so they never block the session. The default store is `<session cwd>/.forkpoint`; set `FORKPOINT_STORE` to override it.
+Recording is off by default. Enable it by setting `FORKPOINT_OBSERVE=1` in the environment before starting Claude Code; unset it to stop. Hooks exit 0 even when recording fails, so they never deny a tool. They are still synchronous: `PreToolUse` adds a Node process per tool call. The default store is `<session cwd>/.forkpoint`; set `FORKPOINT_STORE` to override it. If `SessionEnd` never fires, the run can stay in `status=observing`.
 
 Run:
 

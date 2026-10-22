@@ -145,6 +145,8 @@ Forkpoint 也是一个 Claude Code 插件，分两种模式，边界不同：
 claude --plugin-dir ./plugin
 ```
 
+插件自带打包好的 CLI（`plugin/lib/cli.mjs`），marketplace 安装后不需要再装 npm 包；运行时只需要 Node.js >= 24。
+
 ### strict：录制自己的 agent
 
 ```bash
@@ -165,11 +167,12 @@ export FORKPOINT_OBSERVE=1
 claude
 ```
 
-hooks 只记录 `PreToolUse` / `PostToolUse` 等工具事件，生成 `mode=observed` 的 trace：
+hooks 记录 `PreToolUse` / `PostToolUse` / `PostToolUseFailure` 等工具事件，生成 `mode=observed` 的 trace：
 
 - 可以 `ls`、`show`、`diff`；
 - 不能 `replay` / `verify` / `fork`，命令会显式拒绝；
-- 默认关闭；hook 失败不阻塞会话，只写 stderr；
+- 默认关闭；hook 失败不拒绝工具调用，只写 stderr，但 `PreToolUse` 会同步增加一次 Node 进程启动（本地实测约 0.5 秒/次）；
+- 若 `SessionEnd` 没有触发，run 可能停留在 `status=observing`；
 - trace 含原始工具输入/输出，可能带密钥，分享前用 `export --redact`。
 
 这不是能力缩水，而是平台边界：Claude Code 的 hooks 看不到宿主与模型之间的原始 LLM 流量，也无法控制宿主的 clock / RNG。把 observe 说成“可重放”就是造假，Forkpoint 不做。细节见 [plugin/README.md](plugin/README.md)。
@@ -229,13 +232,13 @@ fork 是 **closed-world**：工具 fixture 按精确请求指纹匹配，模型�
 | `plugin/` | Claude Code 插件（commands / hooks / skill / 启动脚本） |
 | `.claude-plugin/` | marketplace 清单 |
 | `examples/sql-agent/` | Text2SQL demo |
-| `test/` | 109 个测试，覆盖边界、并发、变体、脱敏、observe 与 CLI |
+| `test/` | 116 个测试，覆盖边界、并发、变体、脱敏、observe 与 CLI |
 
 ## 状态
 
 pre-alpha，单人三周作品集项目。已实现非流式录制、严格重放、verify、fork、diff、脱敏导出，以及 Claude Code 插件的 strict + observe 双模式。
 
-下一步：流式响应、mutation benchmark、CI 示例、v0.1.0。
+下一步：流式响应、mutation benchmark、CI 示例、发布 npm v0.1.0。
 
 ## 文档
 

@@ -21,7 +21,7 @@ Forkpoint v0.1 的定位是 **Agent 边界的可复现运行层**，不是操作
 15. strict replay 要求完整消费 baseline 的 clock / RNG 序列；代码路径变化导致多读、少读或换源都会失败。
 16. live SDK / tool 内部的 clock / RNG 读取不进入边界；如果第三方库在 wrapper 之外直接读取，仍可能造成漂移。
 17. Claude Code 插件的 observe 模式只记录工具事件，不记录宿主的 LLM 流量、提示词、token、clock 或 RNG，**不可重放、不可 verify**。
-18. observe 依赖 Claude Code hooks；hooks 未覆盖的宿主动作、工具之外的副作用、hook 丢失或执行超时都不在承诺内。
+18. observe 依赖 Claude Code hooks；hooks 未覆盖的宿主动作、工具之外的副作用、hook 丢失或执行超时都不在承诺内。hook 退出码始终为 0，但 PreToolUse 仍是同步调用，会为每次工具调用增加一次 Node 进程启动开销；缺少 SessionEnd 时 run 可能停留在 `observing`。
 19. 插件不能替目标项目接入 SDK；strict 模式要求子进程自己调用 `fp.run()` 与 `fp.wrapOpenAI()`。
 
 ## 2. clock / RNG 的实际语义
@@ -43,7 +43,7 @@ Forkpoint v0.1 的定位是 **Agent 边界的可复现运行层**，不是操作
 - 同一进程内只允许一个顶层 `fp.run()`；重叠调用会抛 `NestedRunError`，不会共享或错配 clock / RNG 序列。
 - 子进程、worker、并行 task 不共享 cassette 上下文；跨进程因果顺序不承诺。
 - strict record / replay 仍是单写者模型；observe hooks 可能并发写入，`seq` 由单条原子 INSERT 分配，不冲突，但不同 hook 之间的先后顺序不保证。
-- 一个 cassette 文件通过 `node:sqlite` 访问；SQLite 写锁等待上限为 5 秒，密集并发 hook 或慢磁盘仍可能超时。observe 失败不会阻塞宿主会话。
+- 一个 cassette 文件通过 `node:sqlite` 访问；SQLite 写锁等待上限为 5 秒，密集并发 hook 或慢磁盘仍可能超时。observe 失败不会拒绝宿主工具，但 PreToolUse 仍会同步等待 hook 进程结束。
 
 ## 5. 安全与隐私
 
@@ -54,15 +54,16 @@ Forkpoint v0.1 的定位是 **Agent 边界的可复现运行层**，不是操作
 
 ## 6. Claude Code 插件与 observe 模式
 
-- **strict 模式**：插件命令启动一个受 Forkpoint 控制的 Node agent 子进程，能力与 CLI 相同；目标命令必须使用 SDK。插件不是 auto-instrumentation，不能包装任意宿主会话。
-- **observe 模式**：hooks 记录 `SessionStart` / `PreToolUse` / `PostToolUse` / `SessionEnd`，生成 `mode=observed`、`status=observed` 的 run。
+- **strict 模式**：插件命令启动一个受 Forkpoint 控制的 Node agent 子进程，能力与 CLI 相同；目标命令必须使用 SDK。插件不是 auto-instrumentation，不能包装任意宿主会话。插件目录自带打包后的 CLI（`plugin/lib/cli.mjs`），marketplace 安装不依赖已发布的 npm 包；本地仓库开发时优先使用 `dist/cli/index.js`。
+- **observe 模式**：hooks 记录 `SessionStart` / `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `SessionEnd`，生成 `mode=observed`、`status=observed` 的 run。
   - 只有 `FORKPOINT_OBSERVE=1` 时写入；默认关闭，不设置环境变量时不产生文件。
-  - hooks 始终以 0 退出；录制失败只写 stderr，不阻塞工具调用。
+  - hooks 始终以 0 退出，不拒绝工具调用；录制失败只写 stderr。但 hook 是同步执行的：`PreToolUse` 为每次工具调用增加一次 Node 进程启动（本地实测约 0.5 秒/次）。这是延迟，不是阻断。
+  - 缺少 `SessionEnd`（宿主动画、崩溃或超时）时，run 可能停留在 `status=observing`；v0.1 不做自动对账。
   - observed run 没有 `llm.*` 事件、没有 token、没有 clock / RNG；`replay` / `verify` / `fork` 会显式拒绝。
-  - 工具 callsite 固定为 `claude-code:<tool>`；同一工具的多次调用按 ordinal 对齐。
+  - 工具 callsite 固定为 `claude-code:<tool>`；同一工具的多次调用按 ordinal 对齐。失败或中断的工具写入 `tool.error`，中断时带 `isInterrupt`。
   - 同一 `session_id` 被 resume 时，trace 会包含多个 `observe.start` / `run.end` 会话段，仍归入同一条 observed run。
   - 原始工具输入/输出可能包含密钥；cassette 本地保存并 gitignore，分享前使用 `export --redact`。
-  - 宿主的提示词、模型响应与 transcript 内容不复制进 cassette，只保存 `transcript_path` 引用。
+  - 宿主的提示词、模型响应与 transcript 内容不复制进 cassette，只保存绝对路径 `transcript_path`；导出脱敏不会改写该路径。
 
 ## 7. 当前未交付
 

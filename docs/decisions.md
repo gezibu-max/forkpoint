@@ -301,9 +301,9 @@
 **决策**：
 
 1. **strict 模式保留在子进程**：插件命令包装现有 CLI；`/forkpoint:record` 等在 Forkpoint 控制下启动一个 Node agent 子进程。目标命令必须使用 SDK（`fp.run` + `fp.wrapOpenAI`），继续具备 LLM / tool / clock / RNG / env 的严格重放能力。
-2. **observe 模式只记录宿主工具事件**：hooks 把 `SessionStart` / `PreToolUse` / `PostToolUse` / `SessionEnd` 写入 `mode=observed` 的 run。只产生 `observe.start`、`tool.call`、`tool.result`、`run.end`，不产生任何 `llm.*` 事件。
+2. **observe 模式只记录宿主工具事件**：hooks 把 `SessionStart` / `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `SessionEnd` 写入 `mode=observed` 的 run。只产生 `observe.start`、`tool.call`、`tool.result`、`tool.error`、`run.end`，不产生任何 `llm.*` 事件。失败工具写入 `tool.error`，中断时带 `isInterrupt`；`run.end` 保留 SessionEnd 的 `reason`。
 3. **observe 显式不可重放**：`replay` / `verify` / `fork` 在 `readBaseline` 处拒绝 observed run；`diff` 在 caveats 首行标注 observe-only。界面与文档不使用“重放 Claude Code 会话”的表述。
-4. **observe 默认关闭**：只有 `FORKPOINT_OBSERVE=1` 时 hooks 才写入；hook 包装脚本始终以 0 退出，录制失败只写 stderr，不阻塞工具调用。
+4. **observe 默认关闭**：只有 `FORKPOINT_OBSERVE=1` 时 hooks 才写入；hook 包装脚本始终以 0 退出，录制失败只写 stderr，不拒绝工具调用。但 hook 仍是同步执行的，`PreToolUse` 会为每次工具调用增加一次 Node 进程启动开销；这是延迟，不是阻断。
 5. **事件写入跨进程原子**：hooks 可能并发执行，`appendEventNow()` 使用单条 `INSERT ... SELECT COALESCE(MAX(seq), -1) + 1 ... WHERE run_id = ?`，不依赖进程内 `seq` 缓存；`SessionStart` / `SessionEnd` 通过事件存在性检查保证幂等。
 6. **run id 绑定会话**：observed run 使用 `obs_<session_id>`，同一 Claude Code 会话的多次 hook 调用归入同一条 trace；`SessionEnd` 后同一 `session_id` 再次 `SessionStart`（resume）时追加新的 `observe.start` 并把状态改回 `observing`，保留多个会话段而不是丢失后续工具事件。
 
@@ -314,4 +314,25 @@
 - 默认关闭和原子写入把 observe 的侵入性压到最低：不设置环境变量时不产生任何文件。
 - observed run 复用现有事件、diff、ls、show、export 能力，不引入第二套存储。
 
-**代价**：observe trace 没有 LLM 步骤、token 统计、clock / RNG 或宿主提示词，不能用于严格回归；Claude Code hooks 不保证覆盖所有宿主动作，工具事件之外的副作用不可见；并发 hook 只保证 `seq` 不冲突，不保证跨 hook 的因果排序；observed run 的 `tool.call` 不带源码 callsite，只能按 `claude-code:<tool>` + ordinal 对齐；原始工具 I/O 可能含密钥，因此必须本地保存，分享前使用 `export --redact`。插件无法替用户安装 SDK，strict 模式要求目标项目自行接入 Forkpoint。
+**代价**：observe trace 没有 LLM 步骤、token 统计、clock / RNG 或宿主提示词，不能用于严格回归；Claude Code hooks 不保证覆盖所有宿主动作，工具事件之外的副作用不可见；并发 hook 只保证 `seq` 不冲突，不保证跨 hook 的因果排序；observed run 的 `tool.call` 不带源码 callsite，只能按 `claude-code:<tool>` + ordinal 对齐；原始工具 I/O 可能含密钥，因此必须本地保存，分享前使用 `export --redact`；`transcript_path` 以绝对路径保存，导出脱敏不改写它；缺少 `SessionEnd` 时 run 会停留在 `observing`，v0.1 不对账；`PreToolUse` 的同步 Node 启动会增加工具调用延迟。插件无法替用户安装 SDK，strict 模式要求目标项目自行接入 Forkpoint。
+
+---
+
+## ADR-018：插件内置打包 CLI，marketplace 安装不依赖 npm 包
+
+**背景**：Claude Code marketplace 安装的是插件根目录，而不是整个仓库；仓库外没有 `dist/cli/index.js`。而 npm 上的 `forkpoint` 包尚未发布，原解析链在这种情况下必然失败，用户安装后无法执行任何 strict 命令。可选方案是：先发布 npm 包、要求用户自行构建、或把 CLI 打包进插件目录。
+
+**决策**：
+
+1. **单文件 ESM bundle**：用独立的 `tsup.plugin.config.ts` 把 `src/cli/index.ts` 打到 `plugin/lib/cli.mjs`。所有依赖 `noExternal`，`removeNodeProtocol: false` 保留 `node:sqlite`，用 `createRequire` banner 兼容打包后的 CJS 依赖（`cross-spawn`）。
+2. **解析顺序**：`FORKPOINT_CLI` → 仓库 `dist/cli/index.js`（本地开发优先）→ 插件 `lib/cli.mjs` → 当前项目已安装的 `forkpoint`。marketplace 安装走第三条。
+3. **生成物入库**：marketplace 安装不会执行 `npm install` / `npm run build`，因此 `plugin/lib/cli.mjs` 必须随仓库提交。`npm run build` 同时重建库与插件 bundle。
+4. **可执行验证**：测试实际 spawn bundle 的 `--help`，并验证 wrapper 的 stdin 转发、失败退出 0；发布前另做 strict record/replay 冒烟。
+
+**理由**：
+
+- 安装后开箱可用，不需要先发布 npm 包或让用户手写构建步骤。
+- bundle 与库共用同一 CLI 源码，不存在第二套实现。
+- 保留仓库 `dist` 优先，开发时改动立即生效，不必每次重新打包插件。
+
+**代价**：bundle 约 235 KB，依赖代码重复；每次改动 CLI 都要重新 build 并提交生成物，否则插件会运行旧代码；bundle 内的堆栈指向打包行号，不利于排查；仍需 Node.js >= 24。当前测试只保证 bundle 可运行，不校验它与源码同步，发布前必须重新 `npm run build`。

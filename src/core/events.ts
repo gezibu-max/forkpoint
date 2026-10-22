@@ -32,7 +32,7 @@ export type Event =
         sessionSource?: string;
       };
     }
-  | { type: "run.end"; payload: { status: "ok" | "failed"; error?: string } }
+  | { type: "run.end"; payload: { status: "ok" | "failed"; error?: string; reason?: string } }
   | {
       type: "llm.request";
       payload: { provider: string; model: string; stream: boolean; request: unknown };
@@ -49,9 +49,21 @@ export type Event =
     }
   | { type: "llm.chunk"; payload: { index: number; chunk: unknown } }
   | { type: "llm.error"; payload: { name: string; message: string; aborted: boolean } }
-  | { type: "tool.call"; payload: { name: string; args: unknown; isWrite: boolean } }
-  | { type: "tool.result"; payload: { name: string; result: unknown } }
-  | { type: "tool.error"; payload: { name: string; errorName: string; message: string } }
+  | {
+      type: "tool.call";
+      payload: { name: string; args: unknown; isWrite: boolean; toolUseId?: string };
+    }
+  | { type: "tool.result"; payload: { name: string; result: unknown; toolUseId?: string } }
+  | {
+      type: "tool.error";
+      payload: {
+        name: string;
+        errorName: string;
+        message: string;
+        toolUseId?: string;
+        isInterrupt?: boolean;
+      };
+    }
   | { type: "clock.now"; payload: { source: string; value: number } }
   | { type: "rng.value"; payload: { source: string; value: string } }
   | { type: "env.snapshot"; payload: { env: Record<string, string>; lockfileHash?: string } }

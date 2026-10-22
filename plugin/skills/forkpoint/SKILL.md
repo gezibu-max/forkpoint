@@ -37,4 +37,4 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" <command> [args...]
 
 ## Observe mode
 
-Hooks are registered by the plugin, but recording is off unless `FORKPOINT_OBSERVE=1` is set before Claude Code starts. The store defaults to `<session cwd>/.forkpoint`; `FORKPOINT_STORE` overrides it. Hook failures never block the session.
+Hooks are registered by the plugin, but recording is off unless `FORKPOINT_OBSERVE=1` is set before Claude Code starts. The store defaults to `<session cwd>/.forkpoint`; `FORKPOINT_STORE` overrides it. Hook failures never deny a tool, but `PreToolUse` still adds a synchronous Node process per call. A missing `SessionEnd` can leave a run in `status=observing`.

@@ -131,7 +131,7 @@ export function observeHelp(): string {
     "  --store <dir>   Cassette directory (default: <hook cwd>/.forkpoint)",
     "  --json          Print a machine-readable result (hooks should stay quiet)",
     "",
-    "Records SessionStart, PreToolUse, PostToolUse, and SessionEnd; other events are ignored.",
+    "Records SessionStart, PreToolUse, PostToolUse, PostToolUseFailure, and SessionEnd; other events are ignored.",
   ].join("\n");
 }
 

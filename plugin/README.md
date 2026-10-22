@@ -5,7 +5,7 @@ Two modes, with different guarantees:
 | Mode | What it does | Replayable |
 | --- | --- | --- |
 | **Strict** (`/forkpoint:record`, `replay`, `verify`, `diff`, `fork`) | Launches a Forkpoint-instrumented Node agent as a child process. LLM, tool, clock, RNG, and env boundaries are recorded and can be strictly replayed. | Yes |
-| **Observe** (hooks, opt-in) | Records Claude Code tool calls from `PreToolUse` / `PostToolUse` into a local trace. | No |
+| **Observe** (hooks, opt-in) | Records Claude Code tool calls from `PreToolUse` / `PostToolUse` / `PostToolUseFailure` into a local trace. | No |
 
 The plugin never claims it can replay Claude Code's own session. Hooks do not expose the host's raw LLM requests/responses or control its clock and RNG, so strict replay of the host is impossible. Observe mode exists for browsing and diffing tool behavior, not for determinism claims.
 
@@ -24,11 +24,14 @@ For local development without installing:
 claude --plugin-dir ./plugin
 ```
 
-The plugin needs Node.js >= 24 and a resolvable Forkpoint CLI. Resolution order:
+The plugin ships a self-contained CLI bundle at `plugin/lib/cli.mjs`, so a marketplace install needs no separate npm package. It requires Node.js >= 24.
 
-1. `FORKPOINT_CLI` (path to `dist/cli/index.js`)
-2. `dist/cli/index.js` in this repository
-3. an installed `forkpoint` package in the current project or a parent directory
+Resolution order:
+
+1. `FORKPOINT_CLI` (explicit path to a CLI entry)
+2. `dist/cli/index.js` in this repository, when developing locally
+3. the bundled `plugin/lib/cli.mjs`
+4. an installed `forkpoint` package in the current project or a parent directory
 
 If none is found, the wrapper prints an actionable error instead of running something else.
 
@@ -74,7 +77,8 @@ Recorded events:
 - `SessionStart` → creates an observed run (`obs_<session-id>`) and `observe.start`
 - `PreToolUse` → `tool.call` with the tool name, input, and a request fingerprint
 - `PostToolUse` → `tool.result` with the output and a response fingerprint
-- `SessionEnd` → `run.end` and final metrics
+- `PostToolUseFailure` → `tool.error` with the error message, plus `isInterrupt` for interrupted tools
+- `SessionEnd` → `run.end` with the end reason and final metrics
 
 Observed runs:
 
@@ -97,12 +101,16 @@ forkpoint export <run-id> --redact -o trace.jsonl
 
 Review the secret-scan findings. The export is explicitly not replayable.
 
-Hooks always exit 0 and never block tool execution. If recording fails, the warning goes to stderr and the session continues.
+Hooks always exit 0 and never deny a tool, but they are synchronous: Claude Code waits for each hook process. `PreToolUse` adds one Node start-up per tool call (roughly 0.5 s in local measurements). Leave observe off for latency-sensitive sessions. If recording fails, the warning goes to stderr and the session continues. If `SessionEnd` never fires, the run can remain `status=observing`; there is no automatic reconciliation.
+
+The `observe.start` event stores the host's `transcript_path` as an absolute path. Export redaction does not rewrite that path.
 
 ## Limits
 
 - Observe mode has no LLM steps, no token accounting, and no host clock/RNG.
 - Tool hooks do not fire for every possible host action; only tool calls are traced.
+- PreToolUse hooks add a synchronous Node process per tool call; this is not free.
+- A missing `SessionEnd` leaves the observed run in `status=observing`.
 - Strict mode requires an instrumented child command; it cannot wrap an arbitrary Claude Code session.
 - The SDK does not auto-instrument frameworks; wrap OpenAI clients and tool functions explicitly.
 - No hosted service, no Web UI, no repair/merge, no MCP protocol capture.

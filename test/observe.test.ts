@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -79,6 +79,33 @@ function runCliObserve(store: string, input: unknown) {
   );
 }
 
+function runCliObserveAsync(
+  store: string,
+  input: unknown,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "src/cli/index.ts", "observe", "hook", "--store", store, "--json"],
+      {
+        cwd: repoRoot,
+        env: { ...process.env, FORKPOINT_MODE: "" },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => (stdout += chunk));
+    child.stderr.on("data", (chunk: string) => (stderr += chunk));
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify(input));
+  });
+}
+
 describe("observe mode", () => {
   it("records a Claude Code session as an observed tool-only run", () => {
     const store = makeStore();
@@ -122,9 +149,94 @@ describe("observe mode", () => {
       expect(result.responseHash).toMatch(/^[0-9a-f]{64}$/);
       expect(result.payload).toMatchObject({ name: "Read", result: { content: "file contents" } });
 
+      const end = events.find((event) => event.type === "run.end")!;
+      expect(end.payload).toMatchObject({ status: "ok", reason: "clear" });
+
       const metrics = JSON.parse(run?.metricsJson ?? "{}") as Record<string, unknown>;
       expect(metrics.events).toBe(4);
       expect(metrics.toolCalls).toBe(1);
+    } finally {
+      cassette.close();
+    }
+  });
+
+  it("records failed and interrupted tools as tool.error", () => {
+    const store = makeStore();
+    const sessionId = "session-failure";
+    recordObserveEvent({
+      store,
+      input: payload(store, sessionId, { hook_event_name: "SessionStart" }),
+    });
+    recordObserveEvent({
+      store,
+      input: payload(store, sessionId, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "false" },
+        tool_use_id: "toolu_fail",
+      }),
+    });
+    recordObserveEvent({
+      store,
+      input: payload(store, sessionId, {
+        hook_event_name: "PostToolUseFailure",
+        tool_name: "Bash",
+        error: "exit status 1",
+        is_interrupt: false,
+        tool_use_id: "toolu_fail",
+      }),
+    });
+    recordObserveEvent({
+      store,
+      input: payload(store, sessionId, {
+        hook_event_name: "PreToolUse",
+        tool_name: "Read",
+        tool_input: { file: "a.ts" },
+        tool_use_id: "toolu_interrupt",
+      }),
+    });
+    recordObserveEvent({
+      store,
+      input: payload(store, sessionId, {
+        hook_event_name: "PostToolUseFailure",
+        tool_name: "Read",
+        is_interrupt: true,
+        tool_use_id: "toolu_interrupt",
+      }),
+    });
+    recordObserveEvent({
+      store,
+      input: payload(store, sessionId, { hook_event_name: "SessionEnd", reason: "other" }),
+    });
+
+    const cassette = openCassette(store);
+    try {
+      const events = cassette.getEvents(`obs_${sessionId}`);
+      expect(events.map((event) => event.type)).toEqual([
+        "observe.start",
+        "tool.call",
+        "tool.error",
+        "tool.call",
+        "tool.error",
+        "run.end",
+      ]);
+
+      const errors = events.filter((event) => event.type === "tool.error");
+      expect(errors[0]!.payload).toMatchObject({
+        name: "Bash",
+        errorName: "ToolError",
+        message: "exit status 1",
+        toolUseId: "toolu_fail",
+      });
+      expect(errors[0]!.spanId).toBe("toolu_fail");
+      expect(errors[0]!.responseHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(errors[1]!.payload).toMatchObject({
+        name: "Read",
+        errorName: "ToolInterrupted",
+        message: "Tool failed without an error message.",
+        isInterrupt: true,
+      });
+      expect(events.at(-1)!.payload).toMatchObject({ status: "ok", reason: "other" });
     } finally {
       cassette.close();
     }
@@ -303,6 +415,48 @@ describe("observe mode", () => {
       cassette.close();
     }
   });
+
+  it("allocates unique seqs for concurrent hook processes", async () => {
+    const store = makeStore();
+    const sessionId = "session-concurrent";
+    recordObserveEvent({
+      store,
+      input: payload(store, sessionId, { hook_event_name: "SessionStart" }),
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        runCliObserveAsync(
+          store,
+          payload(store, sessionId, {
+            hook_event_name: "PreToolUse",
+            tool_name: "Read",
+            tool_input: { file: `f${index}.ts` },
+            tool_use_id: `toolu_concurrent_${index}`,
+          }),
+        ),
+      ),
+    );
+    for (const result of results) expect(result.status, result.stderr).toBe(0);
+
+    recordObserveEvent({
+      store,
+      input: payload(store, sessionId, { hook_event_name: "SessionEnd", reason: "other" }),
+    });
+
+    const cassette = openCassette(store);
+    try {
+      const run = cassette.getRun(`obs_${sessionId}`);
+      expect(run?.status).toBe("observed");
+      const events = cassette.getEvents(`obs_${sessionId}`);
+      expect(events).toHaveLength(8);
+      expect(new Set(events.map((event) => event.seq)).size).toBe(events.length);
+      expect(cassette.getEventsByType(`obs_${sessionId}`, "tool.call")).toHaveLength(6);
+      expect(JSON.parse(run?.metricsJson ?? "{}")).toMatchObject({ toolCalls: 6 });
+    } finally {
+      cassette.close();
+    }
+  }, 60_000);
 
   it("rejects malformed observe CLI input", () => {
     const store = makeStore();

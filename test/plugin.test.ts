@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,13 @@ function readText(relative: string): string {
 }
 
 const COMMANDS = ["record", "replay", "verify", "diff", "fork", "runs", "observe"];
-const HOOK_EVENTS = ["SessionStart", "PreToolUse", "PostToolUse", "SessionEnd"];
+const HOOK_EVENTS = [
+  "SessionStart",
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "SessionEnd",
+];
 
 describe("Claude Code plugin package", () => {
   it("publishes a marketplace whose plugin source is the plugin directory", () => {
@@ -87,10 +94,24 @@ describe("Claude Code plugin package", () => {
     expect(resolver).toContain("FORKPOINT_CLI");
     expect(resolver).toContain('"node_modules", "forkpoint"');
     expect(resolver).toContain('"dist", "cli", "index.js"');
+    expect(resolver).toContain('"lib", "cli.mjs"');
 
     const wrapper = readText("plugin/scripts/cli.mjs");
     expect(wrapper).toContain("process.argv.slice(2)");
     expect(wrapper).toContain("stdio: \"inherit\"");
+  });
+
+  it("ships a runnable bundled CLI for marketplace installs", () => {
+    const bundle = path.join(pluginRoot, "lib", "cli.mjs");
+    expect(existsSync(bundle), "plugin/lib/cli.mjs is missing; run npm run build:plugin").toBe(true);
+
+    const result = spawnSync(process.execPath, [bundle, "--help"], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Usage: forkpoint");
+    expect(result.stdout).toContain("observe");
   });
 
   it("documents the two modes without overclaiming observe replay", () => {
@@ -114,5 +135,6 @@ describe("Claude Code plugin package", () => {
     for (const name of ["cli.mjs", "observe.mjs", "resolve-cli.mjs"]) {
       expect(existsSync(path.join(pluginRoot, "scripts", name))).toBe(true);
     }
+    expect(existsSync(path.join(pluginRoot, "lib", "cli.mjs"))).toBe(true);
   });
 });

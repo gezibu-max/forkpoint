@@ -22,6 +22,7 @@ export function resolveCliEntry() {
 
   for (const candidate of [
     path.join(repoRoot, "dist", "cli", "index.js"),
+    path.join(pluginRoot, "lib", "cli.mjs"),
     path.join(pluginRoot, "dist", "cli", "index.js"),
   ]) {
     if (isFile(candidate)) return candidate;
@@ -31,7 +32,7 @@ export function resolveCliEntry() {
   if (installed !== undefined) return installed;
 
   throw new Error(
-    "cannot find the forkpoint CLI. Install the forkpoint package in this project, run `npm run build` in the repository, or set FORKPOINT_CLI to dist/cli/index.js.",
+    "cannot find the forkpoint CLI. Run `npm run build` in the forkpoint repository, install a published forkpoint package in this project, or set FORKPOINT_CLI to the CLI entry.",
   );
 }
 

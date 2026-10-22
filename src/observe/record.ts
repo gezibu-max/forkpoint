@@ -16,6 +16,8 @@ export interface ClaudeHookInput {
   tool_output?: unknown;
   tool_response?: unknown;
   tool_use_id?: string;
+  error?: unknown;
+  is_interrupt?: boolean;
   source?: string;
   model?: string;
   agent_type?: string;
@@ -36,7 +38,13 @@ export interface ObserveEventResult {
   recorded: boolean;
 }
 
-const OBSERVE_EVENTS = new Set(["SessionStart", "PreToolUse", "PostToolUse", "SessionEnd"]);
+const OBSERVE_EVENTS = new Set([
+  "SessionStart",
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "SessionEnd",
+]);
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Task"]);
 
 export function recordObserveEvent(options: ObserveEventOptions): ObserveEventResult {
@@ -62,8 +70,10 @@ export function recordObserveEvent(options: ObserveEventOptions): ObserveEventRe
       recordToolCall(cassette, run, options.input);
     } else if (event === "PostToolUse") {
       recordToolResult(cassette, run, options.input);
+    } else if (event === "PostToolUseFailure") {
+      recordToolFailure(cassette, run, options.input);
     } else {
-      finalizeObservedRun(cassette, run);
+      finalizeObservedRun(cassette, run, options.input);
     }
     return { runId: run.id, event, recorded: true };
   } finally {
@@ -186,15 +196,45 @@ function recordToolResult(cassette: Cassette, run: RunRow, input: ClaudeHookInpu
   cassette.appendEventNow(run.id, event);
 }
 
-function finalizeObservedRun(cassette: Cassette, run: RunRow): void {
+function recordToolFailure(cassette: Cassette, run: RunRow, input: ClaudeHookInput): void {
+  const toolName = input.tool_name;
+  if (typeof toolName !== "string" || toolName === "") return;
+
+  const toolUseId = typeof input.tool_use_id === "string" ? input.tool_use_id : undefined;
+  const interrupted = input.is_interrupt === true;
+  const event: EventInput = {
+    type: "tool.error",
+    payload: {
+      name: toolName,
+      errorName: interrupted ? "ToolInterrupted" : "ToolError",
+      message: hookErrorMessage(input.error),
+      ...(interrupted ? { isInterrupt: true } : {}),
+      ...(toolUseId === undefined ? {} : { toolUseId }),
+    },
+    callsite: `claude-code:${toolName}`,
+    responseHash: fingerprintValue(input.error ?? null),
+    ...(toolUseId === undefined ? {} : { spanId: toolUseId }),
+  };
+  cassette.appendEventNow(run.id, event);
+}
+
+function hookErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error !== "") return error;
+  if (error === undefined || error === null) return "Tool failed without an error message.";
+  const serialized = JSON.stringify(error);
+  return serialized === undefined ? String(error) : serialized;
+}
+
+function finalizeObservedRun(cassette: Cassette, run: RunRow, input: ClaudeHookInput): void {
   if (run.status === "observed") return;
 
   const now = realNow();
   const startedAt = Date.parse(run.createdAt);
   const durationMs = Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : undefined;
+  const reason = typeof input.reason === "string" && input.reason !== "" ? input.reason : undefined;
   cassette.appendEventNow(run.id, {
     type: "run.end",
-    payload: { status: "ok" },
+    payload: { status: "ok", ...(reason === undefined ? {} : { reason }) },
     ...(durationMs === undefined ? {} : { durationMs }),
   });
   cassette.updateRunStatus(run.id, "observed", {

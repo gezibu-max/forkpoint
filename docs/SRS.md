@@ -518,17 +518,18 @@ Forkpoint CLI（父进程：record / replay / fork / diff / verify / export）
 | `forkpoint observe hook` | stdin 的 JSON payload | 无 stdout；`--json` 时输出结果摘要 |
 
 - **处理**：
-  - 插件包提供 `.claude-plugin/marketplace.json`、`plugin/.claude-plugin/plugin.json`、commands、hooks、skill 与 CLI 解析脚本。
-  - strict 命令通过 `node plugin/scripts/cli.mjs` 调用 CLI；解析顺序为 `FORKPOINT_CLI` → 仓库 `dist/cli/index.js` → 当前项目已安装的 `forkpoint`。找不到时给可执行建议，不运行替代命令。
+  - 插件包提供 `.claude-plugin/marketplace.json`、`plugin/.claude-plugin/plugin.json`、commands、hooks、skill、CLI 解析脚本与打包后的 CLI（`plugin/lib/cli.mjs`）。
+  - strict 命令通过 `node plugin/scripts/cli.mjs` 调用 CLI；解析顺序为 `FORKPOINT_CLI` → 仓库 `dist/cli/index.js` → 插件自带 `plugin/lib/cli.mjs` → 当前项目已安装的 `forkpoint`。找不到时给可执行建议，不运行替代命令。marketplace 安装只复制插件目录，因此自带 bundle 是默认可用路径。
   - observe 只在 `FORKPOINT_OBSERVE=1` 时写入；默认 store 为 `<session cwd>/.forkpoint`，`FORKPOINT_STORE` 可覆盖。
-  - 每个会话对应 `obs_<session_id>`；`SessionStart` 写 `observe.start`，`PreToolUse` / `PostToolUse` 写 `tool.call` / `tool.result`，`SessionEnd` 写 `run.end` 并更新 metrics。同一 session 被 resume 时追加新的 `observe.start` 并把状态改回 `observing`。
+  - 每个会话对应 `obs_<session_id>`；`SessionStart` 写 `observe.start`，`PreToolUse` / `PostToolUse` / `PostToolUseFailure` 写 `tool.call` / `tool.result` / `tool.error`，`SessionEnd` 写带 `reason` 的 `run.end` 并更新 metrics。同一 session 被 resume 时追加新的 `observe.start` 并把状态改回 `observing`。
   - 并发 hook 使用单条原子 `INSERT ... SELECT MAX(seq)+1` 分配 `seq`；重复的 `observe.start` / `run.end` 在 `observing` / `observed` 状态下幂等。
   - observed run 的 `replay` / `verify` / `fork` 在读取 baseline 时抛 `UsageError`；`diff` caveats 首条标注 observe-only。
 - **异常**：
-  - 缺少 `session_id` 或 payload 非法 → CLI 退出码 2；hook 包装脚本吞掉错误并始终退出 0，避免阻塞宿主。
-  - hook 超过 10 秒 → 包装脚本终止子进程并退出 0。
+  - 缺少 `session_id` 或 payload 非法 → CLI 退出码 2；hook 包装脚本吞掉错误并始终退出 0，避免拒绝宿主工具。
+  - hook 超过 10 秒 → 包装脚本终止子进程并退出 0；hooks.json 的外层 timeout 设为 15 秒，给包装脚本留出干净退出的余量。
   - CLI 无法解析 → strict 命令报错；hook 写 stderr 后退出 0。
-- **验收**：A13、A14 通过；observed run 被 replay/verify/fork 拒绝；diff caveat 含 “Observed Claude Code runs”；`FORKPOINT_OBSERVE` 未设置时不产生 cassette。
+  - `SessionEnd` 未触发 → run 保持 `observing`，v0.1 不做自动对账。
+- **验收**：A13、A14、A15 通过；observed run 被 replay/verify/fork 拒绝；diff caveat 含 “Observed Claude Code runs”；`FORKPOINT_OBSERVE` 未设置时不产生 cassette。
 
 ---
 
@@ -586,14 +587,14 @@ forkpoint <command> [options]
 type Event =
   | { type: "run.start"; payload: { name: string; mode: Mode; parentRunId?: string } }
   | { type: "observe.start"; payload: { name: string; source: "claude-code"; sessionId: string; transcriptPath?: string; model?: string; agentType?: string; sessionSource?: string } }
-  | { type: "run.end"; payload: { status: "ok" | "failed"; error?: string } }
+  | { type: "run.end"; payload: { status: "ok" | "failed"; error?: string; reason?: string } }
   | { type: "llm.request"; payload: { provider: string; model: string; stream: boolean; request: unknown } }
   | { type: "llm.response"; payload: { response: unknown; usage?: Usage; finishReason?: string; responseId?: string; stream: boolean } }
   | { type: "llm.chunk"; payload: { index: number; chunk: unknown } }
   | { type: "llm.error"; payload: { name: string; message: string; aborted: boolean } }
   | { type: "tool.call"; payload: { name: string; args: unknown; isWrite: boolean; toolUseId?: string } }
   | { type: "tool.result"; payload: { name: string; result: unknown; toolUseId?: string } }
-  | { type: "tool.error"; payload: { name: string; errorName: string; message: string } }
+  | { type: "tool.error"; payload: { name: string; errorName: string; message: string; toolUseId?: string; isInterrupt?: boolean } }
   | { type: "clock.now"; payload: { source: string; value: number } }
   | { type: "rng.value"; payload: { source: string; value: string } }
   | { type: "env.snapshot"; payload: { env: Record<string, string>; lockfileHash?: string } }
@@ -615,9 +616,9 @@ interface EventRecord {
 }
 ```
 
-（上面 `tool.error` 的 payload 应为 `{ name, errorName, message }`；实现时以类型定义为准。）
+（上面 `tool.error` 的 payload 以类型定义为准；observe 的失败工具会带 `toolUseId`，中断时带 `isInterrupt`。）
 
-Observed run 不使用 `run.start`，而以 `observe.start` 标记来源；它只包含 `observe.start`、`tool.call`、`tool.result`、`run.end`，不产生任何 `llm.*`、`clock.now` 或 `rng.value` 事件。
+Observed run 不使用 `run.start`，而以 `observe.start` 标记来源；它只包含 `observe.start`、`tool.call`、`tool.result`、`tool.error`、`run.end`，不产生任何 `llm.*`、`clock.now` 或 `rng.value` 事件。
 
 ### 4.4 Canonical JSON 与指纹
 
@@ -746,6 +747,7 @@ LLM 指纹输入：
 | A12 | README 每条声明可复现，无未验证数字 | 全部 | 人工审查 |
 | A13 | 插件 hooks 在 `FORKPOINT_OBSERVE=1` 时写入 observed run，未设置时不写；observed run 被 replay/verify/fork 拒绝 | FR-025 | 单测 + CLI 集成 |
 | A14 | `diff` 对 observed run 输出 observe-only caveat；插件 manifest/hooks/commands 可解析 | FR-025 | 单测 |
+| A15 | 插件目录自带可执行 CLI bundle；在只有插件目录的环境中可运行 `--help` 并完成 strict record/replay；hook 包装脚本转发 stdin、失败时仍退出 0 | FR-025 | 可执行集成测试 |
 
 ---
 
@@ -770,7 +772,7 @@ LLM 指纹输入：
 15. strict replay 要求完整消费 baseline 的 clock / RNG 序列；代码路径变化导致多读、少读或换源都会失败。
 16. live SDK / tool 内部的 clock / RNG 读取不进入边界；如果第三方库在 wrapper 之外直接读取，仍可能造成漂移。
 17. Claude Code 插件的 observe 模式只记录工具事件，不记录宿主的 LLM 流量、提示词、token、clock 或 RNG，不可重放、不可 verify。
-18. observe 依赖 Claude Code hooks；未覆盖的宿主动作、hook 丢失或超时不在承诺内；hooks 失败不阻塞宿主。
+18. observe 依赖 Claude Code hooks；未覆盖的宿主动作、hook 丢失或超时不在承诺内；hooks 失败不拒绝宿主工具，但 `PreToolUse` 会同步增加一次 Node 进程启动延迟，缺少 `SessionEnd` 时 run 可能停留在 `observing`。
 19. 插件不能替目标项目接入 SDK；strict 模式要求子进程调用 `fp.run()` 与 `fp.wrapOpenAI()`。
 
 ---
@@ -843,3 +845,4 @@ Forkpoint replay failed (strict)
 |---|---|---|
 | v0.1 | 2026-10-21 | 初稿；确定 TypeScript、Node >= 24、`node:sqlite`、Forkpoint 命名；明确不做 MCP 协议 / repair / merge |
 | v0.1 | 2026-10-22 | 增加 FR-025：Claude Code 插件双模式；observe 为工具级 trace，明确不可重放；补充 `observe.start` 事件、`FORKPOINT_OBSERVE` 与验收 A13/A14 |
+| v0.1 | 2026-10-22 | 插件自带 CLI bundle，修复 marketplace 安装解析链；observe 记录 `PostToolUseFailure` 为 `tool.error`；补充 hook 延迟、缺失 `SessionEnd` 与验收 A15 |
