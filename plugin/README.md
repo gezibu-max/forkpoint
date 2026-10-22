@@ -37,7 +37,7 @@ If none is found, the wrapper prints an actionable error instead of running some
 
 ## Other Agent Skills hosts
 
-The repository also contains `.agents/skills/forkpoint/SKILL.md`, a byte-identical copy of the plugin skill, for Agent Skills hosts that discover workspace skills from `.agents/skills/`. Qoder already discovers it.
+The repository also contains `.agents/skills/forkpoint/SKILL.md`, a byte-identical copy of the plugin skill, for Agent Skills hosts that discover workspace skills from `.agents/skills/`. Qoder already discovers it; a scripted strict record → replay → verify smoke test also passed there through the `npx` fallback.
 
 Outside Claude Code there is no plugin root and no hook payload, so the skill falls back to `npx --yes forkpoint` and exposes only the CLI commands: `record`, `replay`, `verify`, `diff`, `fork`, `export`, `ls`, and `show`. Observe mode is Claude Code-only.
 

@@ -248,7 +248,7 @@ fork 是 **closed-world**：工具 fixture 按精确请求指纹匹配，模型�
 
 ## 其他 Agent Skills 宿主
 
-[`.agents/skills/forkpoint/SKILL.md`](https://github.com/gezibu-max/forkpoint/blob/main/.agents/skills/forkpoint/SKILL.md) 是与插件内 skill 逐字节一致的副本，供从 `.agents/skills/` 发现工作区技能的宿主使用（Qoder 已自动发现）。在 Claude Code 插件内，skill 调用插件自带 CLI；其他宿主回退到 `npx --yes forkpoint`。
+[`.agents/skills/forkpoint/SKILL.md`](https://github.com/gezibu-max/forkpoint/blob/main/.agents/skills/forkpoint/SKILL.md) 是与插件内 skill 逐字节一致的副本，供从 `.agents/skills/` 发现工作区技能的宿主使用（Qoder 已自动发现，并在 `npx` 回退下完成脚本化 strict record → replay → verify 冒烟）。在 Claude Code 插件内，skill 调用插件自带 CLI；其他宿主回退到 `npx --yes forkpoint`。
 
 跨宿主只覆盖 CLI 能力：`record` / `replay` / `verify` / `diff` / `fork` / `export` / `ls` / `show`。observe 模式依赖 Claude Code 的 hook payload，其他宿主没有等价事件，因此不可用；文档也不承诺“重放宿主会话”。
 
