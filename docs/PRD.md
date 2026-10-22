@@ -571,8 +571,7 @@ CREATE INDEX idx_fixtures_lookup ON fixtures(run_id, kind, fixture_key);
 
 ### 7.14 分发
 
-- npm 包名 `forkpoint`（2026-10-21 未被占用）；发布前再查一次。
-- `npx forkpoint` 可直接运行；`engines.node >= 24`。
+- npm 包名 `forkpoint`，2026-10-22 已发布 0.1.0；`npx forkpoint` 可直接运行；`engines.node >= 24`。
 - 不做 postinstall 脚本；不下载二进制。
 - GitHub repo：`gezibu-max/forkpoint`，public，Apache-2.0。
 

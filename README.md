@@ -3,6 +3,7 @@
 > Record once. Replay deterministically. Find the fork.
 
 ![status](https://img.shields.io/badge/status-pre--alpha-orange)
+![npm](https://img.shields.io/npm/v/forkpoint)
 ![ci](https://github.com/gezibu-max/forkpoint/actions/workflows/ci.yml/badge.svg)
 ![node](https://img.shields.io/badge/node-%3E%3D24-339933)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
@@ -180,7 +181,14 @@ hooks 记录 `PreToolUse` / `PostToolUse` / `PostToolUseFailure` 等工具事件
 
 ## 在代码里使用
 
-`forkpoint` 尚未发布到 npm。目前请在仓库内使用，或从本地路径安装到目标项目（`npm install /path/to/forkpoint`）。
+从 npm 安装：
+
+```bash
+npm install forkpoint
+npx forkpoint --help
+```
+
+也可以直接用 `npx forkpoint` 运行，或在本仓库内 `npm install` 后使用本地构建。
 
 ```ts
 import OpenAI from "openai";
@@ -235,13 +243,13 @@ fork 是 **closed-world**：工具 fixture 按精确请求指纹匹配，模型�
 | `plugin/` | Claude Code 插件（commands / hooks / skill / 启动脚本） |
 | `.claude-plugin/` | marketplace 清单 |
 | `examples/sql-agent/` | Text2SQL demo |
-| `test/` | 116 个测试，覆盖边界、并发、变体、脱敏、observe 与 CLI |
+| `test/` | 117 个测试，覆盖边界、并发、变体、脱敏、observe 与 CLI |
 
 ## 状态
 
 pre-alpha，单人三周作品集项目。已实现非流式录制、严格重放、verify、fork、diff、脱敏导出，以及 Claude Code 插件的 strict + observe 双模式。
 
-下一步：流式响应、mutation benchmark、CI 示例、发布 npm v0.1.0。
+下一步：流式响应、mutation benchmark、真实 Claude Code 宿主下的工具 hook 端到端验证。
 
 ## 文档
 
