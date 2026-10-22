@@ -4140,9 +4140,9 @@ function openDatabase(store) {
     throw wrapCorruption(file, error);
   }
   try {
+    db.exec("PRAGMA busy_timeout = 5000");
     db.exec("PRAGMA journal_mode = DELETE");
     db.exec("PRAGMA synchronous = NORMAL");
-    db.exec("PRAGMA busy_timeout = 5000");
     db.exec("PRAGMA foreign_keys = ON");
     ensureSchema(db, file);
     return db;
