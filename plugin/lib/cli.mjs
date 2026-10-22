@@ -3907,7 +3907,7 @@ function useColor() {
 var program = new Command();
 
 // src/core/version.ts
-var VERSION = "0.0.0";
+var VERSION = "0.1.1";
 
 // src/core/errors.ts
 var ForkpointError = class extends Error {
