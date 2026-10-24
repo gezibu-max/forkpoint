@@ -12,6 +12,10 @@
 
 ---
 
+<img src="https://raw.githubusercontent.com/gezibu-max/forkpoint/main/docs/assets/forkpoint-demo.gif" alt="Forkpoint 终端演示：record → show --events → verify → replay" width="880">
+
+真实终端录制，使用内置的离线脚本客户端（不调用真实模型，不需要 API key）。录制脚本见 [`demo/run-demo.sh`](https://github.com/gezibu-max/forkpoint/blob/main/demo/run-demo.sh)。
+
 ## 30 秒看懂
 
 同一个 Text2SQL agent，只把 SQL 里的「本月」改成「上月」：
@@ -244,6 +248,7 @@ fork 是 **closed-world**：工具 fixture 按精确请求指纹匹配，模型�
 | `.claude-plugin/` | marketplace 清单 |
 | `.agents/skills/forkpoint/` | 可移植 Agent Skills 技能，与插件内副本逐字节一致 |
 | `examples/sql-agent/` | Text2SQL demo |
+| `demo/` | 终端演示脚本（`run-demo.sh`），录屏产物在 `docs/assets/` |
 | `test/` | 120 个测试，覆盖边界、并发、变体、脱敏、observe、Agent Skills 与 CLI |
 
 ## 其他 Agent Skills 宿主
